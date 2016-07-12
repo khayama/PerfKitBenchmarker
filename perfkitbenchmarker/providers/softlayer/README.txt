@@ -1,5 +1,10 @@
 
-1) Install SoftLayer requirements
+Notes on prereqs:
+PKB installation may require packages for Pandas and other components to install correctly.  
+- On Ubuntu 14 the following prereqs were required:  apt-get install build-essential; apt-get install python-dev
+
+1) Install PKB and SoftLayer requirements
+	sudo pip install -r requirements.txt
 	sudo pip install -r requirements-softlayer.txt
 	
 2) Run SoftLayer setup program
