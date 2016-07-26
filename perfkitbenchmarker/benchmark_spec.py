@@ -61,18 +61,18 @@ flags.DEFINE_enum('cloud', providers.GCP,
                   providers.VALID_CLOUDS,
                   'Name of the cloud to use.')
 flags.DEFINE_string('scratch_dir', None,
-                    'Base name for all scratch disk directories in the VM.'
-                    'Upon creation, these directories will have numbers'
+                    'Base name for all scratch disk directories in the VM. '
+                    'Upon creation, these directories will have numbers '
                     'appended to them (for example /scratch0, /scratch1, etc).')
 flags.DEFINE_enum('benchmark_compatibility_checking', SUPPORTED,
                   [SUPPORTED, NOT_EXCLUDED, SKIP_CHECK],
                   'Method used to check compatibility between the benchmark '
                   ' and the cloud.  ' + SUPPORTED + ' runs the benchmark only'
                   ' if the cloud provider has declared it supported. ' +
-                  NOT_EXCLUDED + ' runs the benchmark unless it has been '
-                  ' declared not supported by the could provider. ' +
+                  NOT_EXCLUDED + ' runs the benchmark unless it has been'
+                  ' declared not supported by the cloud provider. ' +
                   SKIP_CHECK + ' does not do the compatibility'
-                  ' check. The default is ' + SUPPORTED)
+                  ' check.')
 
 
 class BenchmarkSpec(object):
@@ -100,7 +100,7 @@ class BenchmarkSpec(object):
     self.vm_groups = {}
     self.deleted = False
     self.file_name = os.path.join(vm_util.GetTempDir(), self.uid)
-    self.uuid = str(uuid.uuid4())
+    self.uuid = '%s-%s' % (FLAGS.run_uri, uuid.uuid4())
     self.always_call_cleanup = False
     self.spark_service = None
 
@@ -237,17 +237,10 @@ class BenchmarkSpec(object):
 
     providers.LoadProvider(self.config.spark_service.cloud)
     spark_service_spec = self.config.spark_service
-    service_type = spark_service_spec.spark_service_type
+    service_type = spark_service_spec.service_type
     spark_service_class = spark_service.GetSparkServiceClass(
         spark_service_spec.cloud, service_type)
-    if self.config.spark_service.static_cluster_name:
-      name = self.config.spark_service.static_cluster_name
-      static_cluster = True
-    else:
-      name = 'pkb-' + FLAGS.run_uri
-      static_cluster = False
-    self.spark_service = spark_service_class(name, static_cluster,
-                                             spark_service_spec)
+    self.spark_service = spark_service_class(spark_service_spec)
 
   def Prepare(self):
     targets = [(vm.PrepareBackgroundWorkload, (), {}) for vm in self.vms]

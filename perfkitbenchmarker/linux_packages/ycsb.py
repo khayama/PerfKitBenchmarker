@@ -1,4 +1,4 @@
-# Copyright 2015 PerfKitBenchmarker Authors. All rights reserved.
+# Copyright 2016 PerfKitBenchmarker Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,8 +55,9 @@ from perfkitbenchmarker import vm_util
 
 FLAGS = flags.FLAGS
 
+YCSB_VERSION = '0.9.0'
 YCSB_TAR_URL = ('https://github.com/brianfrankcooper/YCSB/releases/'
-                'download/0.3.0/ycsb-0.3.0.tar.gz')
+                'download/{0}/ycsb-{0}.tar.gz').format(YCSB_VERSION)
 YCSB_DIR = posixpath.join(vm_util.VM_TMP_DIR, 'ycsb')
 YCSB_EXE = posixpath.join(YCSB_DIR, 'bin', 'ycsb')
 
@@ -143,7 +144,7 @@ def CheckPrerequisites():
 
 def _Install(vm):
   """Installs the YCSB package on the VM."""
-  vm.Install('openjdk7')
+  vm.Install('openjdk')
   vm.Install('curl')
   vm.RemoteCommand(('mkdir -p {0} && curl -L {1} | '
                     'tar -C {0} --strip-components=1 -xzf -').format(
@@ -197,20 +198,38 @@ def ParseResults(ycsb_result_string, data_type='histogram'):
         indicates that 530 ops took between 0ms and 1ms, and 1 took between
         19ms and 20ms. Empty bins are not reported.
   """
+
+  # TODO: YCSB 0.9.0 output client and command line string to stderr, so
+  # we need to support it in the future.
+  lines = []
+  client_string = 'YCSB'
+  command_line = 'unknown'
   fp = io.BytesIO(ycsb_result_string)
-  client_string = next(fp).strip()
-  if not client_string.startswith('YCSB Client 0.'):
+  result_string = next(fp).strip()
+
+  def IsHeadOfResults(line):
+      return line.startswith('YCSB Client 0.') or line.startswith('[OVERALL]')
+
+  while not IsHeadOfResults(result_string):
+    result_string = next(fp).strip()
+
+  if result_string.startswith('YCSB Client 0.'):
+    client_string = result_string
+    command_line = next(fp).strip()
+    if not command_line.startswith('Command line:'):
+      raise IOError('Unexpected second line: {0}'.format(command_line))
+  elif result_string.startswith('[OVERALL]'):  # YCSB > 0.7.0.
+    lines.append(result_string)
+  else:
+    # Received unexpected header
     raise IOError('Unexpected header: {0}'.format(client_string))
-  command_line = next(fp).strip()
-  if not command_line.startswith('Command line:'):
-    raise IOError('Unexpected second line: {0}'.format(command_line))
 
   # Some databases print additional output to stdout.
   # YCSB results start with [<OPERATION_NAME>];
   # filter to just those lines.
   def LineFilter(line):
     return re.search(r'^\[[A-Z]+\]', line) is not None
-  lines = itertools.ifilter(LineFilter, fp)
+  lines = itertools.chain(lines, itertools.ifilter(LineFilter, fp))
 
   r = csv.reader(lines)
 
@@ -514,6 +533,7 @@ class YCSBExecutor(object):
     for parameter, value in parameters.iteritems():
       command.extend(('-p', '{0}={1}'.format(parameter, value)))
 
+    command.append('-p measurementtype=histogram')
     return 'cd %s; %s' % (YCSB_DIR, ' '.join(command))
 
   @property
@@ -607,8 +627,11 @@ class YCSBExecutor(object):
       param, value = pv.split('=', 1)
       kwargs[param] = value
     command = self._BuildCommand('run', **kwargs)
-    stdout, _ = vm.RobustRemoteCommand(command)
-    return ParseResults(str(stdout))
+    # YCSB version greater than 0.7.0 output some of the
+    # info we need to stderr. So we have to combine these 2
+    # output to get expected results.
+    stdout, stderr = vm.RobustRemoteCommand(command)
+    return ParseResults(str(stderr + stdout))
 
   def _RunThreaded(self, vms, **kwargs):
     """Run a single workload using `vms`."""

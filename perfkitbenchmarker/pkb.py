@@ -16,7 +16,7 @@
 
 All benchmarks in PerfKitBenchmarker export the following interface:
 
-GetInfo: this returns, the name of the benchmark, the number of machines
+GetConfig: this returns, the name of the benchmark, the number of machines
          required to run one instance of the benchmark, a detailed description
          of the benchmark, and if the benchmark requires a scratch disk.
 Prepare: this function takes a list of VMs as an input parameter. The benchmark
@@ -60,6 +60,7 @@ import getpass
 import itertools
 import logging
 import sys
+import time
 import uuid
 
 from perfkitbenchmarker import archive
@@ -180,6 +181,16 @@ flags.DEFINE_boolean(
 flags.DEFINE_enum('spark_service_type', None,
                   [spark_service.PKB_MANAGED, spark_service.PROVIDER_MANAGED],
                   'Type of spark service to use')
+flags.DEFINE_boolean(
+    'publish_after_run', False,
+    'If true, PKB will publish all samples available immediately after running '
+    'each benchmark. This may be useful in scenarios where the PKB run time '
+    'for all benchmarks is much greater than a single benchmark.')
+flags.DEFINE_integer(
+    'run_stage_time', 0,
+    'PKB will run/re-run the run stage of each benchmark until it has spent '
+    'at least this many seconds. It defaults to 0, so benchmarks will only '
+    'be run once unless some other value is specified.')
 
 
 # Support for using a proxy in the cloud environment.
@@ -349,6 +360,7 @@ def DoPreparePhase(benchmark, name, spec, timer):
     spec.Prepare()
   with timer.Measure('Benchmark Prepare'):
     benchmark.Prepare(spec)
+  spec.StartBackgroundWorkload()
 
 
 def DoRunPhase(benchmark, name, spec, collector, timer):
@@ -364,14 +376,14 @@ def DoRunPhase(benchmark, name, spec, collector, timer):
   """
   logging.info('Running benchmark %s', name)
   events.before_phase.send(events.RUN_PHASE, benchmark_spec=spec)
-  spec.StartBackgroundWorkload()
   try:
     with timer.Measure('Benchmark Run'):
       samples = benchmark.Run(spec)
   finally:
     events.after_phase.send(events.RUN_PHASE, benchmark_spec=spec)
-    spec.StopBackgroundWorkload()
   collector.AddSamples(samples, name, spec)
+  if FLAGS.publish_after_run:
+    collector.PublishSamples()
 
 
 def DoCleanupPhase(benchmark, name, spec, timer):
@@ -387,6 +399,7 @@ def DoCleanupPhase(benchmark, name, spec, timer):
   logging.info('Cleaning up benchmark %s', name)
 
   if spec.always_call_cleanup or any([vm.is_static for vm in spec.vms]):
+    spec.StopBackgroundWorkload()
     with timer.Measure('Benchmark Cleanup'):
       benchmark.Cleanup(spec)
 
@@ -473,8 +486,12 @@ def RunBenchmark(benchmark, sequence_number, total_benchmarks, benchmark_config,
             DoPreparePhase(benchmark, benchmark_name, spec, detailed_timer)
 
           if stages.RUN in FLAGS.run_stage:
-            DoRunPhase(benchmark, benchmark_name, spec, collector,
-                       detailed_timer)
+            deadline = time.time() + FLAGS.run_stage_time
+            while True:
+              DoRunPhase(benchmark, benchmark_name, spec, collector,
+                         detailed_timer)
+              if time.time() > deadline:
+                break
 
           if stages.CLEANUP in FLAGS.run_stage:
             DoCleanupPhase(benchmark, benchmark_name, spec, detailed_timer)

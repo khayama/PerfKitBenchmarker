@@ -42,6 +42,12 @@ flags.DEFINE_integer('netperf_test_length', 60,
                      'netperf test length, in seconds',
                      lower_bound=1)
 
+ALL_BENCHMARKS = ['TCP_RR', 'TCP_CRR', 'TCP_STREAM', 'UDP_RR']
+flags.DEFINE_list('netperf_benchmarks', ALL_BENCHMARKS,
+                  'The netperf benchmark(s) to run.')
+flags.RegisterValidator(
+    'netperf_benchmarks',
+    lambda benchmarks: benchmarks and set(benchmarks).issubset(ALL_BENCHMARKS))
 
 FLAGS = flags.FLAGS
 
@@ -59,7 +65,6 @@ netperf:
 MBPS = 'Mbits/sec'
 TRANSACTIONS_PER_SECOND = 'transactions_per_second'
 
-NETPERF_BENCHMARKS = ['TCP_RR', 'TCP_CRR', 'TCP_STREAM', 'UDP_RR']
 COMMAND_PORT = 20000
 DATA_PORT = 20001
 
@@ -117,6 +122,7 @@ def RunNetperf(vm, benchmark_name, server_ip):
                  '-P {data_port} '
                  '-o THROUGHPUT,THROUGHPUT_UNITS,P50_LATENCY,P90_LATENCY,'
                  'P99_LATENCY,STDDEV_LATENCY,'
+                 'MIN_LATENCY,MAX_LATENCY,'
                  'CONFIDENCE_ITERATION,THROUGHPUT_CONFID').format(
                      netperf_path=netperf.NETPERF_PATH,
                      benchmark_name=benchmark_name,
@@ -160,6 +166,8 @@ def RunNetperf(vm, benchmark_name, server_ip):
       ('50th Percentile Latency Microseconds', 'p50'),
       ('90th Percentile Latency Microseconds', 'p90'),
       ('99th Percentile Latency Microseconds', 'p99'),
+      ('Minimum Latency Microseconds', 'min'),
+      ('Maximum Latency Microseconds', 'max'),
       ('Stddev Latency Microseconds', 'stddev')]:
     samples.append(
         sample.Sample('%s_Latency_%s' % (benchmark_name, metric_name),
@@ -188,7 +196,7 @@ def Run(benchmark_spec):
     for k, v in vm.GetMachineTypeDict().iteritems():
       metadata['{0}_{1}'.format(vm_specifier, k)] = v
 
-  for netperf_benchmark in NETPERF_BENCHMARKS:
+  for netperf_benchmark in FLAGS.netperf_benchmarks:
 
     if vm_util.ShouldRunOnExternalIpAddress():
       external_ip_results = RunNetperf(client_vm, netperf_benchmark,
