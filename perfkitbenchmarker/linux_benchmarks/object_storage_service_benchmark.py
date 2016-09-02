@@ -31,7 +31,6 @@ category:
 Documentation: https://goto.google.com/perfkitbenchmarker-storage
 """
 
-import itertools
 import json
 import logging
 import os
@@ -40,9 +39,8 @@ import re
 import threading
 import time
 
-import pandas as pd
+import numpy as np
 
-from perfkitbenchmarker import object_storage_multistream_analysis as analysis
 from perfkitbenchmarker import providers
 from perfkitbenchmarker import configs
 from perfkitbenchmarker import data
@@ -97,9 +95,9 @@ flag_util.DEFINE_yaml('object_storage_object_sizes', '1KB',
                       'Size of objects to send and/or receive. Only applies to '
                       'the api_multistream scenario. Examples: 1KB, '
                       '{1KB: 50%, 10KB: 50%}')
-flags.DEFINE_integer('object_storage_multistream_num_streams', 10,
-                     'Number of independent streams to send and/or receive on. '
-                     'Only applies to the api_multistream scenario.',
+flags.DEFINE_integer('object_storage_streams_per_vm', 10,
+                     'Number of independent streams per VM. Only applies to '
+                     'the api_multistream scenario.',
                      lower_bound=1)
 
 flags.DEFINE_integer('object_storage_list_consistency_iterations', 200,
@@ -110,6 +108,16 @@ flags.DEFINE_integer('object_storage_list_consistency_iterations', 200,
                      'scenario. However, to get useful metrics from the '
                      'api_namespace scenario, a high number of iterations '
                      'should be used (>=200).')
+flags.DEFINE_enum('object_storage_object_naming_scheme', 'sequential_by_stream',
+                  ['sequential_by_stream',
+                   'approximately_sequential'],
+                  'How objects will be named. Only applies to the '
+                  'api_multistream benchmark. '
+                  'sequential_by_stream: object names from each stream '
+                  'will be sequential, but different streams will have '
+                  'different name prefixes. '
+                  'approximately_sequential: object names from all '
+                  'streams will roughly increase together.')
 
 
 FLAGS = flags.FLAGS
@@ -135,6 +143,7 @@ object_storage_service:
     default:
       vm_spec: *default_single_core
       disk_spec: *default_500_gb
+      vm_count: null
 """
 
 DATA_FILE = 'cloud-storage-workload.sh'
@@ -297,22 +306,31 @@ def MultiThreadStartDelay(num_vms, threads_per_vm):
       MULTISTREAM_DELAY_PER_STREAM * threads_per_vm)
 
 
-def _ProcessMultiStreamResults(raw_result, operation, sizes,
-                               results, metadata=None):
+def _ProcessMultiStreamResults(start_times, latencies, sizes, operation,
+                               all_sizes, results, metadata=None):
   """Read and process results from the api_multistream worker process.
 
   Results will be reported per-object size and combined for all
   objects.
 
   Args:
-    raw_result: list of strings. The stdouts of the worker processes.
+    start_times: a list of numpy arrays. Operation start times, as
+      POSIX timestamps.
+    latencies: a list of numpy arrays. Operation durations, in seconds.
+    sizes: a list of numpy arrays. Object sizes used in each
+      operation, in bytes.
     operation: 'upload' or 'download'. The operation the results are from.
-    sizes: the object sizes used in the benchmark, in bytes.
+    all_sizes: a sequence of integers. all object sizes in the
+      distribution used, in bytes.
     results: a list to append Sample objects to.
     metadata: dict. Base sample metadata
   """
 
-  num_streams = FLAGS.object_storage_multistream_num_streams
+  num_streams = FLAGS.object_storage_streams_per_vm * FLAGS.num_vms
+
+  assert len(start_times) == num_streams
+  assert len(latencies) == num_streams
+  assert len(sizes) == num_streams
 
   if metadata is None:
     metadata = {}
@@ -320,25 +338,21 @@ def _ProcessMultiStreamResults(raw_result, operation, sizes,
   metadata['objects_per_stream'] = (
       FLAGS.object_storage_multistream_objects_per_stream)
 
-  records = pd.DataFrame({'operation': [],
-                          'start_time': [],
-                          'latency': [],
-                          'size': [],
-                          'stream_num': []})
-  for proc_result in raw_result:
-    proc_json = json.loads(proc_result)
-    records = records.append(pd.DataFrame(proc_json))
-  records = records.reset_index()
+  num_records = sum((len(start_time) for start_time in start_times))
+  logging.info('Processing %s total operation records', num_records)
 
-  logging.info('Records:\n%s', records)
-  logging.info('All latencies positive:%s',
-               (records['latency'] > 0).all())
+  stop_times = [start_time + latency
+                for start_time, latency in zip(start_times, latencies)]
 
-  any_streams_active, all_streams_active = analysis.GetStreamActiveIntervals(
-      records['start_time'], records['latency'], records['stream_num'])
-  start_gap, stop_gap = analysis.StreamStartAndEndGaps(
-      records['start_time'], records['latency'], all_streams_active)
-  if ((start_gap + stop_gap) / any_streams_active.duration <
+  last_start_time = max((start_time[0] for start_time in start_times))
+  first_stop_time = min((stop_time[-1] for stop_time in stop_times))
+
+  # Compute how well our synchronization worked
+  first_start_time = min((start_time[0] for start_time in start_times))
+  last_stop_time = max((stop_time[-1] for stop_time in stop_times))
+  start_gap = last_start_time - first_start_time
+  stop_gap = last_stop_time - first_stop_time
+  if ((start_gap + stop_gap) / (last_stop_time - first_start_time) <
       MULTISTREAM_STREAM_GAP_THRESHOLD):
     logging.info(
         'First stream started %s seconds before last stream started', start_gap)
@@ -349,13 +363,32 @@ def _ProcessMultiStreamResults(raw_result, operation, sizes,
         'Difference between first and last stream start/end times was %s and '
         '%s, which is more than %s of the benchmark time %s.',
         start_gap, stop_gap, MULTISTREAM_STREAM_GAP_THRESHOLD,
-        any_streams_active.duration)
+        (last_stop_time - first_start_time))
     metadata['stream_gap_above_threshold'] = True
 
-  records_in_interval = records[
-      analysis.FullyInInterval(records['start_time'],
-                               records['latency'],
-                               all_streams_active)]
+  # Find the indexes in each stream where all streams are active,
+  # following Python's [inclusive, exclusive) index convention.
+  active_start_indexes = []
+  for start_time in start_times:
+    for i in xrange(len(start_time)):
+      if start_time[i] >= last_start_time:
+        active_start_indexes.append(i)
+        break
+  active_stop_indexes = []
+  for stop_time in stop_times:
+    for i in xrange(len(stop_time) - 1, -1, -1):
+      if stop_time[i] <= first_stop_time:
+        active_stop_indexes.append(i + 1)
+        break
+  active_latencies = [
+      latencies[i][active_start_indexes[i]:active_stop_indexes[i]]
+      for i in xrange(num_streams)]
+  active_sizes = [
+      sizes[i][active_start_indexes[i]:active_stop_indexes[i]]
+      for i in xrange(num_streams)]
+
+  all_active_latencies = np.concatenate(active_latencies)
+  all_active_sizes = np.concatenate(active_sizes)
 
   # Don't publish the full distribution in the metadata because doing
   # so might break regexp-based parsers that assume that all metadata
@@ -368,57 +401,79 @@ def _ProcessMultiStreamResults(raw_result, operation, sizes,
 
   latency_prefix = 'Multi-stream %s latency' % operation
   logging.info('Processing %s multi-stream %s results for the full '
-               'distribution.', len(records_in_interval), operation)
+               'distribution.', len(all_active_latencies), operation)
   _AppendPercentilesToResults(
       results,
-      records_in_interval['latency'],
+      all_active_latencies,
       latency_prefix,
       LATENCY_UNIT,
       distribution_metadata)
 
-  logging.info('Processing %s multi-stream %s results for net throughput',
-               len(records), operation)
-  throughput_stats = analysis.ThroughputStats(
-      records_in_interval['start_time'],
-      records_in_interval['latency'],
-      records_in_interval['size'],
-      records_in_interval['stream_num'],
-      num_streams)
-  # A special throughput statistic that uses all the records, not
-  # restricted to the interval.
-  throughput_stats['net throughput (simplified)'] = (
-      records['size'].sum() * 8 / any_streams_active.duration
-      * units.bit / units.second)
-  gap_stats = analysis.GapStats(
-      records['start_time'],
-      records['latency'],
-      records['stream_num'],
-      all_streams_active,
-      num_streams)
-  logging.info('Benchmark overhead was %s percent of total benchmark time',
-               gap_stats['gap time proportion'].magnitude)
-
-  for name, value in itertools.chain(throughput_stats.iteritems(),
-                                     gap_stats.iteritems()):
-    results.append(sample.Sample(
-        'Multi-stream ' + operation + ' ' + name,
-        value.magnitude, str(value.units), metadata=distribution_metadata))
-
   # Publish by-size and full-distribution stats even if there's only
   # one size in the distribution, because it simplifies postprocessing
   # of results.
-  for size in sizes:
-    this_size_records = records_in_interval[records_in_interval['size'] == size]
+  for size in all_sizes:
     this_size_metadata = metadata.copy()
     this_size_metadata['object_size_B'] = size
-    logging.info('Processing %s multi-stream %s results for object size %s',
-                 len(records), operation, size)
+    logging.info('Processing multi-stream %s results for object size %s',
+                 operation, size)
     _AppendPercentilesToResults(
         results,
-        this_size_records['latency'],
+        all_active_latencies[all_active_sizes == size],
         latency_prefix,
         LATENCY_UNIT,
         this_size_metadata)
+
+  # Throughput metrics
+  total_active_times = [np.sum(latency) for latency in active_latencies]
+  active_durations = [stop_times[i][active_stop_indexes[i] - 1] -
+                      start_times[i][active_start_indexes[i]]
+                      for i in xrange(num_streams)]
+  total_active_sizes = [np.sum(size) for size in active_sizes]
+  # 'net throughput (with gap)' is computed by taking the throughput
+  # for each stream (total # of bytes transmitted / (stop_time -
+  # start_time)) and then adding the per-stream throughputs. 'net
+  # throughput' is the same, but replacing (stop_time - start_time)
+  # with the sum of all of the operation latencies for that thread, so
+  # we only divide by the time that stream was actually transmitting.
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' net throughput',
+      np.sum((size / active_time * 8
+              for size, active_time
+              in zip(total_active_sizes, total_active_times))),
+      'bit / second', metadata=distribution_metadata))
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' net throughput (with gap)',
+      np.sum((size / duration * 8
+              for size, duration in zip(total_active_sizes, active_durations))),
+      'bit / second', metadata=distribution_metadata))
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' net throughput (simplified)',
+      sum([np.sum(size) for size in sizes]) /
+      (last_stop_time - first_start_time) * 8,
+      'bit / second', metadata=distribution_metadata))
+
+  # QPS metrics
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' QPS (any stream active)',
+      num_records / (last_stop_time - first_start_time), 'operation / second',
+      metadata=distribution_metadata))
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' QPS (all streams active)',
+      len(all_active_latencies) / (first_stop_time - last_start_time),
+      'operation / second', metadata=distribution_metadata))
+
+  # Statistics about benchmarking overhead
+  gap_time = sum((active_duration - active_time
+                  for active_duration, active_time
+                  in zip(active_durations, total_active_times)))
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' total gap time',
+      gap_time, 'second', metadata=distribution_metadata))
+  results.append(sample.Sample(
+      'Multi-stream ' + operation + ' gap time proportion',
+      gap_time / (first_stop_time - last_start_time) * 100.0,
+      'percent', metadata=distribution_metadata))
 
 
 def _DistributionToBackendFormat(dist):
@@ -674,14 +729,79 @@ def ListConsistencyBenchmark(results, metadata, vm, command_builder,
                                    metadata)
 
 
-def MultiStreamRWBenchmark(results, metadata, vm, command_builder,
+def LoadWorkerOutput(output):
+  """Load output from worker processes to our internal format.
+
+  Args:
+    output: list of strings. The stdouts of all worker processes.
+
+  Returns:
+    A tuple of start_time, latency, size. Each of these is a list of
+    numpy arrays, one array per worker process. start_time[i],
+    latency[i], and size[i] together form a table giving the start
+    time, latency, and size (bytes transmitted or received) of all
+    send/receive operations for worker i.
+
+    start_time holds POSIX timestamps, stored as np.float64. latency
+    holds times in seconds, stored as np.float64. size holds sizes in
+    bytes, stored as np.int64.
+
+    Example:
+      start_time[i]  latency[i]  size[i]
+      -------------  ----------  -------
+               0.0         0.5      100
+               1.0         0.7      200
+               2.3         0.3      100
+
+  Raises:
+    AssertionError, if an individual worker's input includes
+    overlapping operations, or operations that don't move forward in
+    time, or if the input list isn't in stream number order.
+  """
+
+  start_times = []
+  latencies = []
+  sizes = []
+
+  prev_stream_num = None
+  for worker_out in output:
+    json_out = json.loads(worker_out)
+    num_records = len(json_out)
+
+    assert (not prev_stream_num or
+            json_out[0]['stream_num'] == prev_stream_num + 1)
+    prev_stream_num = prev_stream_num + 1 if prev_stream_num else 0
+
+    start_time = np.zeros([num_records], dtype=np.float64)
+    latency = np.zeros([num_records], dtype=np.float64)
+    size = np.zeros([num_records], dtype=np.int64)
+
+    prev_start = None
+    prev_latency = None
+    for i in xrange(num_records):
+      start_time[i] = json_out[i]['start_time']
+      latency[i] = json_out[i]['latency']
+      size[i] = json_out[i]['size']
+
+      assert i == 0 or start_time[i] >= (prev_start + prev_latency)
+      prev_start = start_time[i]
+      prev_latency = latency[i]
+    start_times.append(start_time)
+    latencies.append(latency)
+    sizes.append(size)
+
+  return start_times, latencies, sizes
+
+
+def MultiStreamRWBenchmark(results, metadata, vms, command_builder,
                            service, bucket_name, regional_bucket_name):
+
   """A benchmark for multi-stream latency and throughput.
 
   Args:
     results: the results array to append to.
     metadata: a dictionary of metadata to add to samples.
-    vm: the VM to run the benchmark on.
+    vms: the VMs to run the benchmark on.
     command_builder: an APIScriptCommandBuilder.
     service: an ObjectStorageService.
     bucket_name: the primary bucket to benchmark.
@@ -692,37 +812,41 @@ def MultiStreamRWBenchmark(results, metadata, vm, command_builder,
     test script.
   """
 
-  logging.info('Starting multi-stream write test.')
+  logging.info('Starting multi-stream write test on %s VMs.', len(vms))
 
   objects_written_file = posixpath.join(vm_util.VM_TMP_DIR,
                                         OBJECTS_WRITTEN_FILE)
 
   size_distribution = _DistributionToBackendFormat(
       FLAGS.object_storage_object_sizes)
+  logging.info('Distribution %s, backend format %s.',
+               FLAGS.object_storage_object_sizes, size_distribution)
+
+  streams_per_vm = FLAGS.object_storage_streams_per_vm
+  num_streams = streams_per_vm * len(vms)
 
   def StartMultiStreamProcess(cmd_args, proc_idx, out_array):
+    vm_idx = proc_idx // streams_per_vm
+    logging.info('Running on VM %s.', vm_idx)
     cmd = command_builder.BuildCommand(
         cmd_args + ['--stream_num_start=%s' % proc_idx])
-    out, _ = vm.RobustRemoteCommand(cmd, should_log=True)
+    out, _ = vms[vm_idx].RobustRemoteCommand(cmd, should_log=True)
     out_array[proc_idx] = out
 
   def RunMultiStreamProcesses(command):
-    output = [None] * FLAGS.object_storage_multistream_num_streams
+    output = [None] * num_streams
     # Each process has a thread managing it.
     threads = [
         threading.Thread(target=StartMultiStreamProcess,
                          args=(command, i, output))
-        for i in xrange(FLAGS.object_storage_multistream_num_streams)]
+        for i in xrange(num_streams)]
     for thread in threads:
       thread.start()
-    logging.info('Started %s processes.',
-                 FLAGS.object_storage_multistream_num_streams)
+    logging.info('Started %s processes.', num_streams)
     for thread in threads:
       thread.join()
     logging.info('All processes complete.')
     return output
-
-  streams_per_vm = FLAGS.object_storage_multistream_num_streams // FLAGS.num_vms
 
   write_start_time = (
       time.time() +
@@ -737,11 +861,13 @@ def MultiStreamRWBenchmark(results, metadata, vm, command_builder,
       '--object_sizes="%s"' % size_distribution,
       '--num_streams=1',
       '--start_time=%s' % write_start_time,
+      '--object_naming_scheme=%s' % FLAGS.object_storage_object_naming_scheme,
       '--objects_written_file=%s' % objects_written_file,
       '--scenario=MultiStreamWrite']
 
   write_out = RunMultiStreamProcesses(multi_stream_write_args)
-  _ProcessMultiStreamResults(write_out, 'upload',
+  start_times, latencies, sizes = LoadWorkerOutput(write_out)
+  _ProcessMultiStreamResults(start_times, latencies, sizes, 'upload',
                              size_distribution.iterkeys(), results,
                              metadata=metadata)
 
@@ -764,7 +890,8 @@ def MultiStreamRWBenchmark(results, metadata, vm, command_builder,
       '--scenario=MultiStreamRead']
   try:
     read_out = RunMultiStreamProcesses(multi_stream_read_args)
-    _ProcessMultiStreamResults(read_out, 'download',
+    start_times, latencies, sizes = LoadWorkerOutput(read_out)
+    _ProcessMultiStreamResults(start_times, latencies, sizes, 'download',
                                size_distribution.iterkeys(), results,
                                metadata=metadata)
   except Exception as ex:
@@ -785,6 +912,11 @@ def CheckPrerequisites():
 
 def _AppendPercentilesToResults(output_results, input_results, metric_name,
                                 metric_unit, metadata):
+  # PercentileCalculator will (correctly) raise an exception on empty
+  # input, but an empty input list makes semantic sense here.
+  if len(input_results) == 0:
+    return
+
   percentiles = PercentileCalculator(input_results)
   for percentile in PERCENTILES_LIST:
     output_results.append(sample.Sample(('%s %s') % (metric_name, percentile),
@@ -947,8 +1079,9 @@ def Prepare(benchmark_spec):
   service.PrepareService(FLAGS.object_storage_region)
 
   vms = benchmark_spec.vms
-  PrepareVM(vms[0], service)
-  service.PrepareVM(vms[0])
+  for vm in vms:
+    PrepareVM(vm, service)
+    service.PrepareVM(vm)
 
   # We would like to always cleanup server side states when exception happens.
   benchmark_spec.always_call_cleanup = True
@@ -1026,11 +1159,17 @@ def Run(benchmark_spec):
   for name, benchmark in [('cli', CLIThroughputBenchmark),
                           ('api_data', OneByteRWBenchmark),
                           ('api_data', SingleStreamThroughputBenchmark),
-                          ('api_namespace', ListConsistencyBenchmark),
-                          ('api_multistream', MultiStreamRWBenchmark)]:
+                          ('api_namespace', ListConsistencyBenchmark)]:
     if FLAGS.object_storage_scenario in {name, 'all'}:
       benchmark(results, metadata, vms[0], command_builder,
                 service, buckets[0], regional_bucket_name)
+
+  # MultiStreamRW is the only benchmark that supports multiple VMs, so
+  # it has a slightly different calling convention than the others.
+  if FLAGS.object_storage_scenario in {'api_multistream', 'all'}:
+    MultiStreamRWBenchmark(results, metadata, vms, command_builder,
+                           service, buckets[0], regional_bucket_name)
+
 
   return results
 
@@ -1047,8 +1186,9 @@ def Cleanup(benchmark_spec):
   buckets = benchmark_spec.buckets
   vms = benchmark_spec.vms
 
-  service.CleanupVM(vms[0])
-  CleanupVM(vms[0])
+  for vm in vms:
+    service.CleanupVM(vm)
+    CleanupVM(vm)
 
   for bucket in buckets:
     service.DeleteBucket(bucket)

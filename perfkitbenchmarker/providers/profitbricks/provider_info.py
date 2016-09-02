@@ -1,4 +1,4 @@
-# Copyright 2015 PerfKitBenchmarker Authors. All rights reserved.
+# Copyright 2016 PerfKitBenchmarker Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Requirements for running PerfKitBenchmarker on OpenStack.
--r../../../requirements.txt
-python-novaclient==4.0.0
-python-openstackclient>=2.6.0
+""" Provider info for ProfitBricks
+"""
+
+
+from perfkitbenchmarker import providers
+from perfkitbenchmarker import provider_info
+
+
+class ProfitBricksProviderInfo(provider_info.BaseProviderInfo):
+
+    UNSUPPORTED_BENCHMARKS = ['mysql_service']
+    CLOUD = providers.PROFITBRICKS
