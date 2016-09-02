@@ -69,6 +69,8 @@ def Prepare(benchmark_spec):
     vm.RemoteCommand('sudo docker run -d --name server --net host '
                      '--volumes-from dataset '
                      'cloudsuite/media-streaming:server')
+    # CPOMMW - to run test on external network have to allow traffic on port 80
+    vm.AllowPort(80)
 
   def PrepareClient(vm):
     PrepareCommon(vm)
@@ -96,7 +98,8 @@ def Run(benchmark_spec):
   stdout, _ = client.RemoteCommand('sudo docker run --rm --name client '
                                    '--net host --volumes-from dataset '
                                    'cloudsuite/media-streaming:client %s'
-                                   % server.internal_ip)
+                                   # CPOMMW - Changed to use external IP instead of internal IP
+                                   % server.ip_address)
 
   match = re.search(r'^Requests: (.+)$', stdout, re.MULTILINE)
   if match:

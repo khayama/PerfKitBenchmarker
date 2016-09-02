@@ -30,6 +30,7 @@ import functools
 import logging
 import operator
 import urlparse
+import time
 
 from perfkitbenchmarker import configs
 from perfkitbenchmarker import flags
@@ -140,6 +141,9 @@ def Run(benchmark_spec):
   target = urlparse.urljoin('http://{0}:{1}'.format(tomcat_vm.ip_address,
                                                     tomcat.TOMCAT_HTTP_PORT),
                             SAMPLE_PAGE_PATH)
+  #CPOVRB - Add 60 second delay to wait for TOMCAT to finish startup
+  logging.info('Sleeping for 60 secs to wait for Tomcat...')
+  time.sleep(60)
 
   logging.info('Warming up for %ds', WARM_UP_DURATION)
   list(wrk.Run(wrk_vm, connections=1, target=target, duration=WARM_UP_DURATION))

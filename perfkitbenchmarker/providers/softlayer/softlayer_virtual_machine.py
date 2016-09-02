@@ -178,7 +178,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
 
     self.ImportKeyfile()
 
-    self.hostname = "Pefkit-Host-" + self.IdGenerator()
+    self.hostname = "Perfkit-Host-" + self.IdGenerator()
 
 
   def _DeleteDependencies(self):
@@ -256,7 +256,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
         '--hostname',
         '%s' % self.hostname,
         '--domain',
-        'perfkit.org',
+        'perfkit.org',     
         '--cpu',
         '%s' % cpus,
         '--os',

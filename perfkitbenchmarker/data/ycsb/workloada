@@ -24,6 +24,12 @@
 
 workload=com.yahoo.ycsb.workloads.CoreWorkload
 
+# CPOMMW -  Change to 100KB records by using 10*10KB fields per record
+fieldcount=10
+fieldlength=10000
+# CPOMMW -  Change test to run for max 2 hours
+maxexecutiontime=7200
+
 readallfields=true
 operationcount=1000
 

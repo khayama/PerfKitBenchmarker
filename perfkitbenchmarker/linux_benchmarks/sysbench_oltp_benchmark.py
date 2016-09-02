@@ -34,15 +34,18 @@ sysbench_oltp:
 """
 
 # TODO(user): Validate that the oltp-table-size stresses PD.
+
+#CPOMMW changed from myISAM to innodb so test performs ACID transactions, logging, disk i/o
+#CPOMMW increased table size to 100M rows (23GB)
+#CPOMMW increased run time from 1 minute to 2 hours 
 SYSBENCH_CMD = ('sudo sysbench '
                 '--test=oltp --db-driver=mysql '
-                '--mysql-table-engine=myisam '
-                '--oltp-table-size=1000000 '
+                '--mysql-table-engine=innodb '
+                '--oltp-table-size=100000000 '
                 '--mysql-user=root '
                 '--max-requests=0 '
-                '--max-time=60 '
+                '--max-time=7200 '
                 '--mysql-password=perfkitbenchmarker ')
-
 
 def GetConfig(user_config):
   return configs.LoadConfig(BENCHMARK_CONFIG, user_config, BENCHMARK_NAME)
@@ -58,12 +61,22 @@ def Prepare(benchmark_spec):
   vms = benchmark_spec.vms
   vm = vms[0]
   vm.Install('mysql')
+
+  #CPOMMW Remove apparmor so mysql can be located on the scratch disk
+  vm.RemoteCommand('sudo /etc/init.d/apparmor stop')
+  vm.RemoteCommand('sudo /etc/init.d/apparmor teardown')
+  vm.RemoteCommand('sudo update-rc.d -f apparmor remove')
+  vm.RemoteCommand('sudo apt-get --purge remove apparmor apparmor-utils libapparmor-perl libapparmor1 -y')
+
   vm.RemoteCommand('sudo service %s status' % vm.GetServiceName('mysql'))
   vm.RemoteCommand('chmod 777 %s' % vm.GetScratchDir())
   vm.RemoteCommand('sudo service %s stop' % vm.GetServiceName('mysql'))
+
+  #CPOMMW changed the following sed to have tabs and space so it actually updates the /etc/mysql/my.cnf
   vm.RemoteCommand('sudo sed -i '
-                   '"s/datadir=\\/var\\/lib\\/mysql/datadir=\\%s\\/mysql/" '
+                   '"s/datadir\\t\\t= \\/var\\/lib\\/mysql/datadir\\t\\t= \\%s\\/mysql/" '
                    '%s' % (vm.GetScratchDir(), vm.GetPathToConfig('mysql')))
+
   vm.RemoteCommand('sudo cp -R -p /var/lib/mysql %s/' % vm.GetScratchDir())
   vm.RemoteCommand('sudo service %s restart' % vm.GetServiceName('mysql'))
   vm.RemoteCommand('sudo service %s status' % vm.GetServiceName('mysql'))
