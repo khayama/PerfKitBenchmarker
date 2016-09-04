@@ -109,7 +109,8 @@ flags.DEFINE_integer('ycsb_record_count', 1000000, 'Pre-load with a total '
                      'dataset of records total.')
 flags.DEFINE_integer('ycsb_operation_count', 1000000, 'Number of operations '
                      '*per client VM*.')
-flags.DEFINE_integer('ycsb_timelimit', 1800, 'Maximum amount of time to run '
+# CPOMMW - Change max runtime to 'unlimited' which is the YCSB default
+flags.DEFINE_integer('ycsb_timelimit', 0, 'Maximum amount of time to run '
                      'each workload / client count combination. Set to 0 for '
                      'unlimited time.')
 
