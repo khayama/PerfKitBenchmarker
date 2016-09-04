@@ -106,6 +106,8 @@ def Run(benchmark_spec):
   hadoop_cmd = '{0} jar {1}'.format(
       posixpath.join(hadoop.HADOOP_BIN, 'yarn'),
       mapreduce_example_jar)
+  time.sleep(30) 
+  logging.info('Force 30 second wait...vrb')
   master.RobustRemoteCommand('{0} teragen {1} /teragen'.format(
       hadoop_cmd, FLAGS.terasort_num_rows))
   num_cpus = sum(vm.num_cpus for vm in vms[1:])
