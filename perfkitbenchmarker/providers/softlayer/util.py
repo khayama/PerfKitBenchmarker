@@ -21,6 +21,10 @@ from perfkitbenchmarker import flags
 from perfkitbenchmarker import vm_util
 
 SoftLayer_PATH = 'slcli'
+# CPOMRS Add variables for a temporary file location and the default DomainName
+tmpfile='/tmp/tmp.txt'
+defaultDomain = 'perfkit.org'
+# CPOMRS
 SoftLayer_PREFIX = [SoftLayer_PATH]
 FLAGS = flags.FLAGS
 

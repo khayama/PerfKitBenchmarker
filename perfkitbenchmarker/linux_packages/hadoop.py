@@ -142,8 +142,10 @@ def ConfigureAndStart(master, workers, start_yarn=True):
                         script_path, context=context)
   master.RemoteCommand('bash {0}'.format(script_path), should_log=True)
 
-  logging.info('Sleeping 10s for Hadoop nodes to join.')
-  time.sleep(10)
+  #CPOVRB Sleep needed to avoid error
+  logging.info('Sleeping 60s for Hadoop nodes to join.')
+  time.sleep(60)
+  #CPOVRB
 
   logging.info('Checking HDFS status.')
   hdfs_online_count = _GetHDFSOnlineNodeCount(master)
