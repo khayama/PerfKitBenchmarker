@@ -31,7 +31,10 @@ from perfkitbenchmarker import sample
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.linux_packages import hadoop
 
-flags.DEFINE_integer('terasort_num_rows', 100000000,
+# 100000000 = 10GB Default
+#flags.DEFINE_integer('terasort_num_rows', 100000000,
+# 192000000 = 19.2GB
+flags.DEFINE_integer('terasort_num_rows', 192000000,
                      'Number of 100-byte rows used in terasort.')
 
 FLAGS = flags.FLAGS
