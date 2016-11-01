@@ -37,14 +37,14 @@ sysbench_oltp:
 
 #CPOMMW changed from myISAM to innodb so test performs ACID transactions, logging, disk i/o
 #CPOMMW increased table size to 100M rows (23GB)
-#CPOMMW increased run time from 1 minute to 2 hours 
+#CPOMMW increased run time from 1 minute to 3 hours 
 SYSBENCH_CMD = ('sudo sysbench '
                 '--test=oltp --db-driver=mysql '
                 '--mysql-table-engine=innodb '
                 '--oltp-table-size=100000000 '
                 '--mysql-user=root '
                 '--max-requests=0 '
-                '--max-time=7200 '
+                '--max-time=10800 '
                 '--mysql-password=perfkitbenchmarker ')
 
 def GetConfig(user_config):
