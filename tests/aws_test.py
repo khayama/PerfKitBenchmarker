@@ -24,7 +24,6 @@ from perfkitbenchmarker import benchmark_spec
 from perfkitbenchmarker import context
 from perfkitbenchmarker import os_types
 from perfkitbenchmarker import providers
-from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker.configs import benchmark_config_spec
 from perfkitbenchmarker.providers.aws import aws_disk
 from perfkitbenchmarker.providers.aws import aws_network
@@ -97,6 +96,7 @@ class AwsVirtualMachineExistsTestCase(unittest.TestCase):
     mocked_flags.cloud = providers.AWS
     mocked_flags.os_type = os_types.DEBIAN
     mocked_flags.run_uri = 'aaaaaa'
+    mocked_flags.temp_dir = 'tmp'
     p = mock.patch('perfkitbenchmarker.providers.aws.'
                    'util.IssueRetryableCommand')
     p.start()
@@ -105,13 +105,13 @@ class AwsVirtualMachineExistsTestCase(unittest.TestCase):
     # VM Creation depends on there being a BenchmarkSpec.
     config_spec = benchmark_config_spec.BenchmarkConfigSpec(
         _BENCHMARK_NAME, flag_values=mocked_flags, vm_groups={})
-    self.spec = benchmark_spec.BenchmarkSpec(config_spec, _BENCHMARK_NAME,
+    self.spec = benchmark_spec.BenchmarkSpec(mock.MagicMock(), config_spec,
                                              _BENCHMARK_UID)
     self.addCleanup(context.SetThreadBenchmarkSpec, None)
 
     self.vm = aws_virtual_machine.AwsVirtualMachine(
-        virtual_machine.BaseVmSpec('test_vm_spec.AWS', zone='us-east-1a',
-                                   machine_type='c3.large'))
+        aws_virtual_machine.AwsVmSpec('test_vm_spec.AWS', zone='us-east-1a',
+                                      machine_type='c3.large'))
     self.vm.id = 'i-foo'
     path = os.path.join(os.path.dirname(__file__),
                         'data', 'aws-describe-instance.json')
@@ -154,3 +154,73 @@ class AwsGetRegionFromZoneTestCase(unittest.TestCase):
 
   def testRegion(self):
     self.assertEqual(util.GetRegionFromZone('eu-central-1'), 'eu-central-1')
+
+
+class AwsGetBlockDeviceMapTestCase(unittest.TestCase):
+
+  def setUp(self):
+    p = mock.patch(util.__name__ + '.IssueRetryableCommand')
+    p.start()
+    self.addCleanup(p.stop)
+
+    path = os.path.join(os.path.dirname(__file__),
+                        'data', 'describe_image_output.txt')
+    with open(path) as fp:
+      self.describeImageOutput = fp.read()
+
+  def testInvalidMachineType(self):
+    self.assertEqual(aws_virtual_machine.GetBlockDeviceMap('invalid'), None)
+
+  def testValidMachineTypeWithNoRootVolumeSize(self):
+    expected = [{"DeviceName": "/dev/xvdb",
+                 "VirtualName": "ephemeral0"}]
+    actual = json.loads(aws_virtual_machine.GetBlockDeviceMap('c1.medium'))
+    self.assertEqual(actual, expected)
+
+  def testValidMachineTypeWithSpecifiedRootVolumeSize(self):
+    util.IssueRetryableCommand.side_effect = [(self.describeImageOutput, None)]
+    desired_root_volume_size_gb = 35
+    machine_type = 'c1.medium'
+    image_id = 'ami-a9d276c9'
+    region = 'us-west-2'
+    expected = [{'DeviceName': '/dev/sda1',
+                 'Ebs': {'SnapshotId': 'snap-826344d5',
+                         'DeleteOnTermination': True,
+                         'VolumeType': 'gp2',
+                         'VolumeSize': 35}},
+                {'DeviceName': '/dev/xvdb',
+                 'VirtualName': 'ephemeral0'}]
+    actual = json.loads(aws_virtual_machine.GetBlockDeviceMap(
+        machine_type, desired_root_volume_size_gb, image_id, region))
+    self.assertEqual(actual, expected)
+
+
+class AwsGetRootBlockDeviceSpecForImageTestCase(unittest.TestCase):
+
+  def setUp(self):
+    p = mock.patch(util.__name__ + '.IssueRetryableCommand')
+    p.start()
+    self.addCleanup(p.stop)
+
+    path = os.path.join(os.path.dirname(__file__),
+                        'data', 'describe_image_output.txt')
+    with open(path) as fp:
+      self.describeImageOutput = fp.read()
+
+  def testOk(self):
+    util.IssueRetryableCommand.side_effect = [(self.describeImageOutput, None)]
+    image_id = 'ami-a9d276c9'
+    region = 'us-west-2'
+    expected = {
+        'DeviceName': '/dev/sda1',
+        'Ebs': {
+            'SnapshotId': 'snap-826344d5',
+            'DeleteOnTermination': True,
+            'VolumeType': 'gp2',
+            'VolumeSize': 8,
+            'Encrypted': False
+        }
+    }
+    actual = aws_virtual_machine.GetRootBlockDeviceSpecForImage(image_id,
+                                                                region)
+    self.assertEqual(actual, expected)

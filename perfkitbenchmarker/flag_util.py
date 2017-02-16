@@ -145,6 +145,8 @@ class IntegerListParser(flags.ArgumentParser):
       return inp
     elif isinstance(inp, list):
       return IntegerList(inp)
+    elif isinstance(inp, int):
+      return IntegerList([inp])
 
     def HandleNonIncreasing():
       if self.on_nonincreasing == IntegerListParser.WARN:
@@ -213,15 +215,17 @@ class FlagDictSubstitution(object):
     """
     self._flags = flag_values
     self._substitute = substitute
+    self._flag_dict_func_name = (
+        '_flags' if hasattr(self._flags, '_flags') else 'FlagDict')
 
   def __enter__(self):
     """Begins the flag substitution."""
-    self._original_flagdict = self._flags.FlagDict
-    self._flags.__dict__['FlagDict'] = self._substitute
+    self._original_flagdict = getattr(self._flags, self._flag_dict_func_name)
+    self._flags.__dict__[self._flag_dict_func_name] = self._substitute
 
   def __exit__(self, *unused_args, **unused_kwargs):
     """Stops the flag substitution."""
-    self._flags.__dict__['FlagDict'] = self._original_flagdict
+    self._flags.__dict__[self._flag_dict_func_name] = self._original_flagdict
 
 
 class UnitsParser(flags.ArgumentParser):
@@ -454,7 +458,7 @@ def ParseKeyValuePairs(strings):
   pairs = {}
   for pair in [kv for s in strings for kv in s.split(',')]:
     try:
-      key, value = pair.split(':')
+      key, value = pair.split(':', 1)
       pairs[key] = value
     except ValueError:
       logging.error('Bad key value pair format. Skipping "%s".', pair)

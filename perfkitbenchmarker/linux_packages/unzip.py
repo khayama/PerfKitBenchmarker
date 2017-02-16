@@ -1,4 +1,4 @@
-# Copyright 2015 PerfKitBenchmarker Authors. All rights reserved.
+# Copyright 2016 PerfKitBenchmarker Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,14 +13,14 @@
 # limitations under the License.
 
 
-"""Module containing zlib installation and cleanup functions."""
+"""Module containing unzip installation and cleanup functions."""
 
 
 def YumInstall(vm):
-  """Installs the zlib package on the VM."""
-  vm.InstallPackages('zlib zlib-devel')
+  """Installs the unzip package on the VM."""
+  vm.InstallPackages('unzip')
 
 
 def AptInstall(vm):
-  """Installs the zlib package on the VM."""
-  vm.InstallPackages('zlib1g zlib1g-dev')
+  """Installs the unzip package on the VM."""
+  vm.InstallPackages('unzip')

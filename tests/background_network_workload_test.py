@@ -28,6 +28,7 @@ from perfkitbenchmarker import os_types
 from perfkitbenchmarker import providers
 from perfkitbenchmarker.configs import benchmark_config_spec
 from perfkitbenchmarker.linux_benchmarks import ping_benchmark
+from perfkitbenchmarker.providers.gcp import util
 from tests import mock_flags
 
 
@@ -94,6 +95,10 @@ class TestBackgroundNetworkWorkload(unittest.TestCase):
     self.mocked_flags = mock_flags.PatchTestCaseFlags(self)
     self.mocked_flags.os_type = os_types.DEBIAN
     self.mocked_flags.cloud = providers.GCP
+    self.mocked_flags.temp_dir = 'tmp'
+    p = patch(util.__name__ + '.GetDefaultProject')
+    p.start()
+    self.addCleanup(p.stop)
     self.addCleanup(context.SetThreadBenchmarkSpec, None)
 
   def _CheckVmCallCounts(self, spec, working_groups, working_expected_counts,
@@ -142,7 +147,7 @@ class TestBackgroundNetworkWorkload(unittest.TestCase):
     config = configs.LoadConfig(yaml_benchmark_config, {}, NAME)
     config_spec = benchmark_config_spec.BenchmarkConfigSpec(
         NAME, flag_values=self.mocked_flags, **config)
-    spec = benchmark_spec.BenchmarkSpec(config_spec, NAME, UID)
+    spec = benchmark_spec.BenchmarkSpec(ping_benchmark, config_spec, UID)
     spec.ConstructVirtualMachines()
     return spec
 

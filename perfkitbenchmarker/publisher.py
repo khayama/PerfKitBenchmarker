@@ -15,11 +15,13 @@
 """Classes to collect and publish performance samples to various sinks."""
 
 import abc
+import copy
 import csv
 import io
 import itertools
 import json
 import logging
+import math
 import operator
 import pprint
 import sys
@@ -27,7 +29,6 @@ import time
 import uuid
 
 from perfkitbenchmarker import disk
-from perfkitbenchmarker import events
 from perfkitbenchmarker import flags
 from perfkitbenchmarker import flag_util
 from perfkitbenchmarker import version
@@ -58,6 +59,11 @@ flags.DEFINE_string(
     None,
     'A path to write newline-delimited JSON results '
     'Default: write to a run-specific temporary directory')
+flags.DEFINE_enum(
+    'json_write_mode',
+    'wb',
+    ['wb', 'ab'],
+    'Open mode for file specified by --json_path. Default: overwrite file')
 flags.DEFINE_boolean(
     'collapse_labels',
     True,
@@ -88,6 +94,15 @@ flags.DEFINE_string(
     'cloud_storage_bucket',
     None,
     'GCS bucket to upload records to. Bucket must exist.')
+
+flags.DEFINE_string(
+    'es_uri', None,
+    'The Elasticsearch address and port. e.g. http://localhost:9200')
+
+flags.DEFINE_string(
+    'es_index', 'perfkit', 'Elasticsearch index name to store documents')
+
+flags.DEFINE_string('es_type', 'result', 'Elasticsearch document type')
 
 flags.DEFINE_multistring(
     'metadata',
@@ -175,6 +190,7 @@ class DefaultMetadataProvider(MetadataProvider):
           metadata[name_prefix + 'aws_provisioned_iops'] = data_disk.iops
         # Modern metadata keys
         metadata[name_prefix + 'data_disk_0_type'] = disk_type
+        metadata[name_prefix + 'data_disk_count'] = len(vm.scratch_disks)
         metadata[name_prefix + 'data_disk_0_size'] = (
             disk_size * num_stripes if disk_size else disk_size)
         metadata[name_prefix + 'data_disk_0_num_stripes'] = num_stripes
@@ -183,7 +199,12 @@ class DefaultMetadataProvider(MetadataProvider):
             metadata[name_prefix + 'scratch_disk_type'] = (
                 data_disk.metadata[disk.LEGACY_DISK_TYPE])
           for key, value in data_disk.metadata.iteritems():
-            metadata[name_prefix + 'data_disk_0_' + key] = value
+            metadata[name_prefix + 'data_disk_0_%s' % (key, )] = value
+
+    if FLAGS.set_files:
+      metadata['set_files'] = ','.join(FLAGS.set_files)
+    if FLAGS.sysctl:
+      metadata['sysctl'] = ','.join(FLAGS.sysctl)
 
     # Flatten all user metadata into a single list (since each string in the
     # FLAGS.metadata can actually be several key-value pairs) and then iterate
@@ -297,7 +318,7 @@ class PrettyPrintStreamPublisher(SamplePublisher):
 
     for sample in samples:
       for k, v in sample['metadata'].iteritems():
-        if len(unique_values.setdefault(k, set())) < 2:
+        if len(unique_values.setdefault(k, set())) < 2 and v.__hash__:
           unique_values[k].add(v)
 
     # Find keys which are not present in all samples
@@ -534,6 +555,96 @@ class CloudStoragePublisher(SamplePublisher):
       vm_util.IssueRetryableCommand(copy_cmd)
 
 
+class ElasticsearchPublisher(SamplePublisher):
+  """Publish samples to an Elasticsearch server. Index and document type
+  will be created if they do not exist.
+
+  Attributes:
+    es_uri: String. e.g. "http://localhost:9200"
+    es_index: String. Default "perfkit"
+    es_type: String. Default "result"
+  """
+  def __init__(self, es_uri=None, es_index=None, es_type=None):
+    self.es_uri = es_uri
+    self.es_index = es_index.lower()
+    self.es_type = es_type
+    self.mapping = {
+        "mappings": {
+            "result": {
+                "numeric_detection": True,
+                "properties": {
+                    "timestamp": {
+                        "type": "date",
+                        "format": "yyyy-MM-dd HH:mm:ss.SSSSSS"
+                    },
+                    "value": {
+                        "type": "double"
+                    }
+                },
+                "dynamic_templates": [{
+                    "strings": {
+                        "match_mapping_type": "string",
+                        "mapping": {
+                            "type": "string",
+                            "fields": {
+                                "raw": {
+                                    "type": "string",
+                                    "index": "not_analyzed"
+                                }
+                            }
+                        }
+                    }
+                }]
+            }
+        }
+    }
+
+  def PublishSamples(self, samples):
+    """Publish samples to Elasticsearch service"""
+    try:
+      from elasticsearch import Elasticsearch
+    except ImportError:
+      raise ImportError('The "elasticsearch" package is required to use '
+                        'the Elasticsearch publisher. Please make sure it '
+                        'is installed.')
+
+    es = Elasticsearch([self.es_uri])
+    if not es.indices.exists(index=self.es_index):
+      es.indices.create(index=self.es_index, body=self.mapping)
+      logging.info('Create index %s and default mappings', self.es_index)
+    for s in samples:
+      sample = copy.deepcopy(s)
+      # Make timestamp understandable by ES and human.
+      sample['timestamp'] = self._FormatTimestampForElasticsearch(
+          sample['timestamp']
+      )
+      # Keys cannot have dots for ES
+      sample = self._deDotKeys(sample)
+      # Add sample to the "perfkit index" of "result type" and using sample_uri
+      # as each ES's document's unique _id
+      es.create(index=self.es_index, doc_type=self.es_type,
+                id=sample['sample_uri'], body=json.dumps(sample))
+
+  def _FormatTimestampForElasticsearch(self, epoch_us):
+    """Convert the floating epoch timestamp in micro seconds epoch_us to
+    yyyy-MM-dd HH:mm:ss.SSSSSS in string
+    """
+    ts = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch_us))
+    num_dec = ("%.6f" % (epoch_us - math.floor(epoch_us))).split('.')[1]
+    new_ts = '%s.%s' % (ts, num_dec)
+    return new_ts
+
+  def _deDotKeys(self, res):
+    """Recursively replace dot with underscore in all keys in a dictionary."""
+    for key, value in res.items():
+      if isinstance(value, dict):
+        self._deDotKeys(value)
+      new_key = key.replace('.', '_')
+      if new_key != key:
+        res[new_key] = res.pop(key)
+    return res
+
+
 class SampleCollector(object):
   """A performance sample collector.
 
@@ -573,6 +684,7 @@ class SampleCollector(object):
     default_json_path = vm_util.PrependTempDir(DEFAULT_JSON_OUTPUT_NAME)
     publishers.append(NewlineDelimitedJSONPublisher(
         FLAGS.json_path or default_json_path,
+        mode=FLAGS.json_write_mode,
         collapse_labels=FLAGS.collapse_labels))
     if FLAGS.bigquery_table:
       publishers.append(BigQueryPublisher(
@@ -587,6 +699,11 @@ class SampleCollector(object):
                                               gsutil_path=FLAGS.gsutil_path))
     if FLAGS.csv_path:
       publishers.append(CSVPublisher(FLAGS.csv_path))
+
+    if FLAGS.es_uri:
+      publishers.append(ElasticsearchPublisher(es_uri=FLAGS.es_uri,
+                                               es_index=FLAGS.es_index,
+                                               es_type=FLAGS.es_type))
 
     return publishers
 
@@ -612,8 +729,6 @@ class SampleCollector(object):
       sample['owner'] = FLAGS.owner
       sample['run_uri'] = benchmark_spec.uuid
       sample['sample_uri'] = str(uuid.uuid4())
-      events.sample_created.send(benchmark_spec=benchmark_spec,
-                                 sample=sample)
       self.samples.append(sample)
 
   def PublishSamples(self):

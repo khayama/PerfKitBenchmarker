@@ -278,17 +278,10 @@ class BaseVirtualMachine(resource.BaseResource):
               disk_num, len(self.scratch_disks)))
     return self.scratch_disks[disk_num].mount_point
 
-  def GetLocalDisks(self):
-    # TODO(ehankland) This method should be removed as soon as raw/unmounted
-    # scratch disks are supported in a different way. Only the Aerospike
-    # benchmark currently accesses disks using this method.
-    """Returns a list of local disks on the VM."""
-    return []
-
-  def AllowPort(self, port):
+  def AllowPort(self, start_port, end_port=None):
     """Opens the port on the firewall corresponding to the VM if one exists."""
     if self.firewall:
-      self.firewall.AllowPort(self, port)
+      self.firewall.AllowPort(self, start_port, end_port)
 
   def AllowRemoteAccessPorts(self):
     """Allow all ports in self.remote_access_ports."""
@@ -380,6 +373,16 @@ class BaseOsMixin(object):
       RemoteCommandError: If there was a problem issuing the command.
     """
     raise NotImplementedError()
+
+  def TryRemoteCommand(self, command, **kwargs):
+    """Runs a remote command and returns True iff it succeeded."""
+    try:
+      self.RemoteCommand(command, **kwargs)
+      return True
+    except errors.VirtualMachine.RemoteCommandError:
+      return False
+    except:
+      raise
 
   @abc.abstractmethod
   def RemoteCopy(self, file_path, remote_path='', copy_to=True):
@@ -606,3 +609,13 @@ class BaseOsMixin(object):
         if self.OS_TYPE in workload.EXCLUDED_OS_TYPES:
           raise NotImplementedError()
         workload.Prepare(self)
+
+  @abc.abstractmethod
+  def SetReadAhead(self, num_sectors, devices):
+    """Set read-ahead value for block devices.
+
+    Args:
+      num_sectors: int. Number of sectors of read ahead.
+      devices: list of strings. A list of block devices.
+    """
+    raise NotImplementedError()

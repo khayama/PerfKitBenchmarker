@@ -2,8 +2,8 @@ PerfKit Benchmarker
 ==================
 
 PerfKit Benchmarker is an open effort to define a canonical set of benchmarks to measure and compare cloud
-offerings.  It's designed to operate via vendor provided command line tools. The benchmarks are not
-tuned (ie the defaults) because this is what most users will use.  This should help us drive to great defaults.
+offerings.  It's designed to operate via vendor provided command line tools. The benchmark default settings are not
+tuned for any particular platform or instance type. These settings are recommended for consistency across services.
 Only in the rare case where there is a common practice like setting the buffer pool size of a database do we
 change any settings.
 
@@ -157,10 +157,10 @@ $ sudo pip install -r requirements.txt
 
 This section describes the setup steps needed for each cloud system.  
 * [Google Cloud](#install-gcloud-and-setup-authentication)
-* [OpenStack](#install-openstack-nova-client-and-setup-authentication)
+* [OpenStack](#install-openstack-cli-client-and-setup-authentication)
 * [Kubernetes](#kubernetes-configuration-and-credentials)
 * [Mesos](#mesos-configuration)
-* [Cloudstack](#cloudstack-install-csapi-and-set-the-api-keys)
+* [Cloudstack](#cloudstack-install-dependencies-and-set-the-api-keys)
 * [AWS](#install-aws-cli-and-setup-authentication)
 * [Azure](#windows-azure-cli-and-credentials)
 * [AliCloud](#install-alicloud-cli-and-setup-authentication)
@@ -365,30 +365,32 @@ $ aws configure
 ```
 
 ### Windows Azure CLI and credentials
-You first need to install node.js and NPM.
-This version of Perfkit Benchmarker is compatible with azure version 0.9.9.
+
+You first need to install node.js and NPM.  This version of Perfkit Benchmarker
+is known to be compatible with Azure CLI version 0.10.4, and will likely work
+with any version newer than that.
 
 Go [here](https://nodejs.org/download/), and follow the setup instructions.
 
 Next, run the following (omit the `sudo` on Windows):
 
 ```bash
-$ sudo npm install azure-cli@0.9.9 -g
-$ azure account download
+$ sudo npm install azure-cli -g
+$ azure login
 ```
-
-Read the output of the previous command. It will contain a webpage URL. Open that in a browser. It will download
-a file (`.publishsettings`) file. Copy to the folder you're running PerfKit Benchmarker. In my case the file was called
-`Free Trial-7-18-2014-credentials.publishsettings`.
-
-```bash
-$ azure account import [path to .publishsettings file]
-```
-
 Test that `azure` is installed correctly:
 
 ```bash
 $ azure vm list
+```
+
+Finally, make sure Azure is in Resource Management mode and that your account is
+authorized to allocate VMs and networks from Azure:
+
+```bash
+$ azure config mode arm
+$ azure provider register Microsoft.Compute
+$ azure provider register Microsoft.Network
 ```
 
 ### Install AliCloud CLI and setup authentication
@@ -465,37 +467,12 @@ Run the following command to install `aliyuncli` (omit the `sudo` on Windows)
 
 ### DigitalOcean configuration and credentials
 
-PerfKit Benchmarker uses the `curl` tool to interact with
-DigitalOcean's REST API. This API uses oauth for authentication.
-Please set this up as follows:
+1. Install `doctl`, the DigitalOcean CLI, following the instructions at
+`https://github.com/digitalocean/doctl`.
 
-Log in to your DigitalOcean account and create a Personal Access Token
-for use by PerfKit Benchmarker with read/write access in [Settings /
-API](https://cloud.digitalocean.com/settings/applications).
-
-Save a copy of the authentication token it shows, this is a
-64-character hex string.
-
-Create a curl configuration file containing the needed authorization
-header. The double quotes are required. Example:
-
-```bash
-$ cat > ~/.config/digitalocean-oauth.curl
-header = "Authorization: Bearer 9876543210fedc...ba98765432"
-^D
-```
-
-Confirm that the authentication works:
-
-```bash
-$ curl --config ~/.config/digitalocean-oauth.curl https://api.digitalocean.com/v2/sizes
-{"sizes":[{"slug":"512mb","memory":512,"vcpus":1,...
-```
-
-PerfKit Benchmarker uses the file location `~/.config/digitalocean-oauth.curl`
-by default, you can use the `--digitalocean_curl_config` flag to
-override the path.
-
+2. Authenticate with `doctl`. The easiest way is running `doctl auth login` and
+   following the instructions, but any of the options at the `doctl` site will
+   work.
 
 ### Installing CLIs and credentials for Rackspace
 
@@ -754,7 +731,7 @@ OpenStack | nova | |
 CloudStack | QC-1 | |
 Rackspace | IAD | OnMetal machine-types are available only in IAD zone
 Kubernetes | k8s | |
-ProfitBricks | ZONE_1 | Additional zones: ZONE_2
+ProfitBricks | AUTO | Additional zones: ZONE_1, ZONE_2, or ZONE_3
 
 Example:
 
@@ -988,6 +965,25 @@ netperf:
 
 The new defaults will only apply to the benchmark in which they are specified.
 
+Using Elasticsearch Publisher
+=================
+PerfKit data can optionally be published to an Elasticsearch server. To enable this, the
+`elasticsearch` Python package must be installed.
+
+```bash
+$ sudo pip install elasticsearch
+```
+
+Note: The `elasticsearch` Python library and Elasticsearch must have matching major versions.
+
+The following are flags used by the Elasticsearch publisher. At minimum, all that is needed
+is the `--es_uri` flag.
+
+Flag | Notes
+-----|------
+`--es_uri`         | The Elasticsearch server address and port (e.g. localhost:9200)
+`--es_index`       | The Elasticsearch index name to store documents (default: perfkit)
+`--es_type`        | The Elasticsearch document type (default: result)
 
 How to Extend PerfKit Benchmarker
 =================
@@ -1006,6 +1002,7 @@ Even with lots of comments we make to support more detailed documention.  You wi
 
 Integration Testing
 ===================
+If you wish to run unit or integration tests, ensure that you have `tox >= 2.0.0` installed.
 
 In addition to regular unit tests, which are run via
 [`hooks/check-everything`](hooks/check-everything), PerfKit Benchmarker has

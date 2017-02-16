@@ -67,7 +67,7 @@ def GetConfig(user_config):
   return config
 
 
-def CheckPrerequisites():
+def CheckPrerequisites(benchmark_config):
   """Verifies that the required resources are present.
 
   Raises:
@@ -146,6 +146,10 @@ def Prepare(benchmark_spec):
 
   _CreateYCSBTable(seed_vm)
 
+  benchmark_spec.executor = ycsb.YCSBExecutor(
+      'cassandra-10',
+      hosts=','.join(vm.internal_ip for vm in cassandra_vms))
+
 
 def Run(benchmark_spec):
   """Spawn YCSB and gather the results.
@@ -161,9 +165,6 @@ def Run(benchmark_spec):
   cassandra_vms = _GetVMsByRole(benchmark_spec)['cassandra_vms']
   logging.debug('Loaders: %s', loaders)
 
-  executor = ycsb.YCSBExecutor(
-      'cassandra-10',
-      hosts=','.join(vm.internal_ip for vm in cassandra_vms))
 
   kwargs = {'hosts': ','.join(vm.internal_ip for vm in cassandra_vms),
             'columnfamily': COLUMN_FAMILY,
@@ -173,11 +174,11 @@ def Run(benchmark_spec):
             'cassandra.deleteconsistencylevel': WRITE_CONSISTENCY}
 
   metadata = {'ycsb_client_vms': FLAGS.ycsb_client_vms,
-              'num_vms': len(cassandra_vms)}
+              'num_vms': len(cassandra_vms),
+              'concurrent_reads': FLAGS.cassandra_concurrent_reads}
 
-  samples = list(executor.LoadAndRun(loaders,
-                                     load_kwargs=kwargs,
-                                     run_kwargs=kwargs))
+  samples = list(benchmark_spec.executor.LoadAndRun(
+      loaders, load_kwargs=kwargs, run_kwargs=kwargs))
 
   for sample in samples:
     sample.metadata.update(metadata)

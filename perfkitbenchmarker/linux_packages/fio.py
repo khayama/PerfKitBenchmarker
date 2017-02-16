@@ -19,19 +19,19 @@ import time
 
 from perfkitbenchmarker import regex_util
 from perfkitbenchmarker import sample
-from perfkitbenchmarker import vm_util
+from perfkitbenchmarker.linux_packages import INSTALL_DIR
 
-FIO_DIR = '%s/fio' % vm_util.VM_TMP_DIR
+FIO_DIR = '%s/fio' % INSTALL_DIR
 GIT_REPO = 'http://git.kernel.dk/fio.git'
-GIT_TAG = 'fio-2.2.10'
+GIT_TAG = 'fio-2.7'
 FIO_PATH = FIO_DIR + '/fio'
 FIO_CMD_PREFIX = '%s --output-format=json' % FIO_PATH
 SECTION_REGEX = r'\[(\w+)\]\n([\w\d\n=*$/]+)'
 PARAMETER_REGEX = r'(\w+)=([/\w\d$*]+)\n'
 GLOBAL = 'global'
-CMD_SECTION_REGEX = r'--name=(\w+)\s+'
+CMD_SECTION_REGEX = r'--name=([\S]+)\s+'
 JOB_SECTION_REPL_REGEX = r'[\1]\n'
-CMD_PARAMETER_REGEX = r'--(\w+=[/\w\d]+)\n'
+CMD_PARAMETER_REGEX = r'--([\S]+)\s*'
 CMD_PARAMETER_REPL_REGEX = r'\1\n'
 CMD_STONEWALL_PARAMETER = '--stonewall'
 JOB_STONEWALL_PARAMETER = 'stonewall'

@@ -4,7 +4,9 @@
 /setuptools-*.egg
 /setuptools*.zip
 *.py[co]
+*.swp
 /perfkitbenchmarker.egg-info
 /.tox
-.project
-.pydevproject
+*.iml
+/.idea
+/*git_ignore*

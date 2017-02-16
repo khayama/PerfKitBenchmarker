@@ -27,6 +27,7 @@ import mock
 from perfkitbenchmarker import publisher
 from perfkitbenchmarker import sample
 from perfkitbenchmarker import vm_util
+from perfkitbenchmarker.providers.gcp import util
 
 
 class PrettyPrintStreamPublisherTestCase(unittest.TestCase):
@@ -192,6 +193,9 @@ class SampleCollectorTestCase(unittest.TestCase):
     self.benchmark_spec = mock.MagicMock()
 
     p = mock.patch(publisher.__name__ + '.FLAGS')
+    p2 = mock.patch(util.__name__ + '.GetDefaultProject')
+    p2.start()
+    self.addCleanup(p2.stop)
     self.mock_flags = p.start()
     self.addCleanup(p.stop)
 
@@ -237,7 +241,9 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
     p = mock.patch(publisher.__name__ + '.FLAGS')
     self.mock_flags = p.start()
     self.mock_flags.configure_mock(metadata=[],
-                                   num_striped_disks=1)
+                                   num_striped_disks=1,
+                                   sysctl=[],
+                                   set_files=[])
     self.addCleanup(p.stop)
 
     self.maxDiff = None
@@ -301,6 +307,7 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
                     scratch_disk_type='disk-type',
                     data_disk_0_size=20,
                     data_disk_0_type='disk-type',
+                    data_disk_count=1,
                     data_disk_0_num_stripes=1)
     self._RunTest(self.mock_spec, expected)
 
@@ -314,6 +321,7 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
                     scratch_disk_type='disk-type',
                     data_disk_0_size=None,
                     data_disk_0_type='disk-type',
+                    data_disk_count=1,
                     data_disk_0_num_stripes=1)
     self._RunTest(self.mock_spec, expected)
 
@@ -327,6 +335,7 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
                     scratch_disk_iops=1000,
                     data_disk_0_size=20,
                     data_disk_0_type='disk-type',
+                    data_disk_count=1,
                     data_disk_0_num_stripes=1,
                     aws_provisioned_iops=1000)
     self._RunTest(self.mock_spec, expected)
@@ -340,6 +349,7 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
                     scratch_disk_type='disk-type',
                     data_disk_0_size=20,
                     data_disk_0_type='disk-type',
+                    data_disk_count=1,
                     data_disk_0_num_stripes=1,
                     data_disk_0_foo='bar')
     self._RunTest(self.mock_spec, expected)
@@ -354,6 +364,7 @@ class DefaultMetadataProviderTestCase(unittest.TestCase):
                     scratch_disk_type='remote_ssd',
                     data_disk_0_size=20,
                     data_disk_0_type='disk-type',
+                    data_disk_count=1,
                     data_disk_0_num_stripes=1,
                     data_disk_0_foo='bar',
                     data_disk_0_legacy_disk_type='remote_ssd')

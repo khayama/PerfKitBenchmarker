@@ -1,4 +1,4 @@
-# Copyright 2015 PerfKitBenchmarker Authors. All rights reserved.
+# Copyright 2016 PerfKitBenchmarker Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Module containing cmake installation and cleanup functions."""
 
-"""Module containing pcre installation and cleanup functions."""
+
+def _Install(vm):
+  """Installs the cmake package on the VM."""
+  vm.InstallPackages('cmake')
 
 
 def YumInstall(vm):
-  """Installs the pcre package on the VM."""
-  vm.InstallPackages('pcre pcre-devel')
+  """Installs the cmake package on the VM."""
+  _Install(vm)
 
 
 def AptInstall(vm):
-  """Installs the pcre package on the VM."""
-  vm.InstallPackages('libpcre3 libpcre3-dev libpcrecpp0')
+  """Installs the cmake package on the VM."""
+  _Install(vm)

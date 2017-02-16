@@ -39,6 +39,11 @@ from perfkitbenchmarker import windows_virtual_machine
 
 FLAGS = flags.FLAGS
 
+flags.DEFINE_list('static_vm_tags', None,
+                  'The tags of static VMs for PKB to run with. Even if other '
+                  'VMs are specified in a config, if they aren\'t in this list '
+                  'they will be skipped during VM creation.')
+
 
 class StaticVmSpec(virtual_machine.BaseVmSpec):
   """Object containing all info needed to create a Static VM."""
@@ -47,7 +52,8 @@ class StaticVmSpec(virtual_machine.BaseVmSpec):
 
   def __init__(self, component_full_name, ip_address=None, user_name=None,
                ssh_private_key=None, internal_ip=None, ssh_port=22,
-               password=None, disk_specs=None, os_type=None, **kwargs):
+               password=None, disk_specs=None, os_type=None, tag=None,
+               **kwargs):
     """Initialize the StaticVmSpec object.
 
     Args:
@@ -64,6 +70,8 @@ class StaticVmSpec(virtual_machine.BaseVmSpec):
           create disk.BaseDiskSpecs.
       os_type: The OS type of the VM. See the flag of the same name for more
           information.
+      tag: A string that allows the VM to be included or excluded from a run
+          by using the 'static_vm_tags' flag.
     """
     super(StaticVmSpec, self).__init__(component_full_name, **kwargs)
     self.ip_address = ip_address
@@ -73,9 +81,11 @@ class StaticVmSpec(virtual_machine.BaseVmSpec):
     self.ssh_port = ssh_port
     self.password = password
     self.os_type = os_type
+    self.tag = tag
     self.disk_specs = [
         disk.BaseDiskSpec(
-            '{0}.disk_specs[{1}]'.format(component_full_name, i), **disk_spec)
+            '{0}.disk_specs[{1}]'.format(component_full_name, i),
+            flag_values=kwargs.get('flag_values'), **disk_spec)
         for i, disk_spec in enumerate(disk_specs or ())]
 
 
@@ -147,12 +157,6 @@ class StaticVirtualMachine(virtual_machine.BaseVirtualMachine):
   def DeleteScratchDisks(self):
     """StaticVirtualMachines do not delete scratch disks."""
     pass
-
-  def GetLocalDisks(self):
-    """Returns a list of local disks on the VM."""
-    return [disk_spec.device_path
-            for disk_spec in self.disk_specs if disk_spec.device_path]
-
 
   @classmethod
   def ReadStaticVirtualMachineFile(cls, file_obj):
@@ -252,7 +256,8 @@ class StaticVirtualMachine(virtual_machine.BaseVirtualMachine):
           'static_vm_file', ip_address=ip_address, user_name=user_name,
           ssh_port=ssh_port, install_packages=install_packages,
           ssh_private_key=keyfile_path, internal_ip=internal_ip, zone=zone,
-          disk_specs=disk_kwargs_list, password=password)
+          disk_specs=disk_kwargs_list, password=password,
+          flag_values=flags.FLAGS)
 
       vm_class = GetStaticVmClass(os_type)
       vm = vm_class(vm_spec)

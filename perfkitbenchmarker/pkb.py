@@ -59,19 +59,24 @@ import collections
 import getpass
 import itertools
 import logging
+import multiprocessing
+import re
 import sys
 import time
 import uuid
 
 from perfkitbenchmarker import archive
+from perfkitbenchmarker import background_tasks
 from perfkitbenchmarker import benchmark_sets
 from perfkitbenchmarker import benchmark_spec
 from perfkitbenchmarker import benchmark_status
 from perfkitbenchmarker import configs
+from perfkitbenchmarker import context
 from perfkitbenchmarker import disk
 from perfkitbenchmarker import errors
 from perfkitbenchmarker import events
 from perfkitbenchmarker import flags
+from perfkitbenchmarker import flag_util
 from perfkitbenchmarker import linux_benchmarks
 from perfkitbenchmarker import log_util
 from perfkitbenchmarker import os_types
@@ -85,6 +90,7 @@ from perfkitbenchmarker import version
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker import windows_benchmarks
 from perfkitbenchmarker.configs import benchmark_config_spec
+from perfkitbenchmarker.linux_benchmarks import cluster_boot_benchmark
 from perfkitbenchmarker.publisher import SampleCollector
 
 LOG_FILE_NAME = 'pkb.log'
@@ -105,11 +111,15 @@ flags.DEFINE_string('project', None, 'GCP project ID under which '
 flags.DEFINE_list(
     'zones', [],
     'A list of zones within which to run PerfKitBenchmarker. '
-    'This is specific to the cloud provider you are running o`n. '
+    'This is specific to the cloud provider you are running on. '
     'If multiple zones are given, PerfKitBenchmarker will create 1 VM in '
     'zone, until enough VMs are created as specified in each '
     'benchmark. The order in which this flag is applied to VMs is '
     'undefined.')
+flags.DEFINE_list(
+    'extra_zones', [],
+    'Zones that will be appended to the "zones" list. This is functionally '
+    'the same, but allows flag matrices to have two zone axes.')
 # TODO(user): note that this is currently very GCE specific. Need to create a
 #    module which can traslate from some generic types to provider specific
 #    nomenclature.
@@ -191,7 +201,22 @@ flags.DEFINE_integer(
     'PKB will run/re-run the run stage of each benchmark until it has spent '
     'at least this many seconds. It defaults to 0, so benchmarks will only '
     'be run once unless some other value is specified.')
-
+flags.DEFINE_integer(
+    'run_stage_retries', 0,
+    'The number of allowable consecutive failures during the run stage. After '
+    'this number of failures any exceptions will cause benchmark termination. '
+    'If run_stage_time is exceeded, the run stage will not be retried even if '
+    'the number of failures is less than the value of this flag.')
+flags.DEFINE_boolean(
+    'boot_samples', False,
+    'Whether to publish boot time samples for all tests.')
+flags.DEFINE_integer(
+    'run_processes', 1,
+    'The number of parallel processes to use to run benchmarks.',
+    lower_bound=1)
+flags.DEFINE_string(
+    'helpmatch', '',
+    'Shows only flags defined in a module whose name matches the given regex.')
 
 # Support for using a proxy in the cloud environment.
 flags.DEFINE_string('http_proxy', '',
@@ -206,6 +231,7 @@ flags.DEFINE_string('ftp_proxy', '',
 
 MAX_RUN_URI_LENGTH = 8
 
+_TEARDOWN_EVENT = multiprocessing.Event()
 
 events.initialization_complete.connect(traces.RegisterAll)
 
@@ -237,8 +263,28 @@ def _ParseFlags(argv=sys.argv):
   try:
     argv = FLAGS(argv)
   except flags.FlagsError as e:
-    logging.error('%s\nUsage: %s ARGS\n%s', e, sys.argv[0], FLAGS)
+    logging.error(e)
+    logging.info('For usage instructions, use --helpmatch={module_name}')
+    logging.info('For example, ./pkb.py --helpmatch=benchmarks.fio')
     sys.exit(1)
+
+
+def _PrintHelp(matches=None):
+  """Prints help for flags defined in matching modules.
+
+  Args:
+    matches regex string or None. Filters help to only those whose name
+      matched the regex. If None then all flags are printed.
+  """
+  if not matches:
+    print FLAGS
+  else:
+    flags_by_module = FLAGS.FlagsByModuleDict()
+    modules = sorted(flags_by_module)
+    regex = re.compile(matches)
+    for module_name in modules:
+      if regex.search(module_name):
+        print FLAGS.ModuleHelp(module_name)
 
 
 def CheckVersionFlag():
@@ -271,28 +317,25 @@ def _InitializeRunUri():
                                       'length.')
 
 
-def _CreateBenchmarkRunList():
-  """Create a list of configs and states for each benchmark run to be scheduled.
+def _CreateBenchmarkSpecs():
+  """Create a list of BenchmarkSpecs for each benchmark run to be scheduled.
 
   Returns:
-    list of (args, run_status_list) pairs. Contains one pair per benchmark run
-    to be scheduled, including multiple pairs for benchmarks that will be run
-    multiple times. args is a tuple of the first five arguments to pass to
-    RunBenchmark, and run_status_list is a list of strings in the order of
-    [benchmark_name, benchmark_uid, benchmark_status].
+    A list of BenchmarkSpecs.
   """
-  result = []
+  specs = []
   benchmark_tuple_list = benchmark_sets.GetBenchmarksFromFlags()
-  total_benchmarks = len(benchmark_tuple_list)
   benchmark_counts = collections.defaultdict(itertools.count)
-  for i, benchmark_tuple in enumerate(benchmark_tuple_list):
+  for benchmark_module, user_config in benchmark_tuple_list:
     # Construct benchmark config object.
-    benchmark_module, user_config = benchmark_tuple
     name = benchmark_module.BENCHMARK_NAME
     expected_os_types = (
         os_types.WINDOWS_OS_TYPES if FLAGS.os_type in os_types.WINDOWS_OS_TYPES
         else os_types.LINUX_OS_TYPES)
-    config_dict = benchmark_module.GetConfig(user_config)
+    merged_flags = benchmark_config_spec.FlagsDecoder().Decode(
+        user_config.get('flags'), 'flags', FLAGS)
+    with flag_util.FlagDictSubstitution(FLAGS, lambda: merged_flags):
+      config_dict = benchmark_module.GetConfig(user_config)
     config_spec_class = getattr(
         benchmark_module, 'BENCHMARK_CONFIG_SPEC_CLASS',
         benchmark_config_spec.BenchmarkConfigSpec)
@@ -308,33 +351,34 @@ def _CreateBenchmarkRunList():
     if check_prereqs:
       try:
         with config.RedirectFlags(FLAGS):
-          check_prereqs()
+          check_prereqs(config)
       except:
         logging.exception('Prerequisite check failed for %s', name)
         raise
 
-    result.append((
-        (benchmark_module, i + 1, total_benchmarks, config, uid),
-        [name, uid, benchmark_status.SKIPPED]))
+    specs.append(benchmark_spec.BenchmarkSpec.GetBenchmarkSpec(
+        benchmark_module, config, uid))
 
-  return result
+  return specs
 
 
-def DoProvisionPhase(name, spec, timer):
+def DoProvisionPhase(spec, timer):
   """Performs the Provision phase of benchmark execution.
 
   Args:
-    name: A string containing the benchmark name.
     spec: The BenchmarkSpec created for the benchmark.
     timer: An IntervalTimer that measures the start and stop times of resource
       provisioning.
   """
-  logging.info('Provisioning resources for benchmark %s', name)
-  spec.ConstructVirtualMachines()
+  logging.info('Provisioning resources for benchmark %s', spec.name)
+  # spark service needs to go first, because it adds some vms.
   spec.ConstructSparkService()
+  spec.ConstructDpbService()
+  spec.ConstructVirtualMachines()
   # Pickle the spec before we try to create anything so we can clean
   # everything up on a second run if something goes wrong.
-  spec.PickleSpec()
+  spec.Pickle()
+  events.benchmark_start.send(benchmark_spec=spec)
   try:
     with timer.Measure('Resource Provisioning'):
       spec.Provision()
@@ -342,33 +386,29 @@ def DoProvisionPhase(name, spec, timer):
     # Also pickle the spec after the resources are created so that
     # we have a record of things like AWS ids. Otherwise we won't
     # be able to clean them up on a subsequent run.
-    spec.PickleSpec()
+    spec.Pickle()
 
 
-def DoPreparePhase(benchmark, name, spec, timer):
+def DoPreparePhase(spec, timer):
   """Performs the Prepare phase of benchmark execution.
 
   Args:
-    benchmark: The benchmark module.
-    name: A string containing the benchmark name.
     spec: The BenchmarkSpec created for the benchmark.
     timer: An IntervalTimer that measures the start and stop times of the
       benchmark module's Prepare function.
   """
-  logging.info('Preparing benchmark %s', name)
+  logging.info('Preparing benchmark %s', spec.name)
   with timer.Measure('BenchmarkSpec Prepare'):
     spec.Prepare()
   with timer.Measure('Benchmark Prepare'):
-    benchmark.Prepare(spec)
+    spec.BenchmarkPrepare(spec)
   spec.StartBackgroundWorkload()
 
 
-def DoRunPhase(benchmark, name, spec, collector, timer):
+def DoRunPhase(spec, collector, timer):
   """Performs the Run phase of benchmark execution.
 
   Args:
-    benchmark: The benchmark module.
-    name: A string containing the benchmark name.
     spec: The BenchmarkSpec created for the benchmark.
     collector: The SampleCollector object to add samples to.
     timer: An IntervalTimer that measures the start and stop times of the
@@ -376,18 +416,33 @@ def DoRunPhase(benchmark, name, spec, collector, timer):
   """
   deadline = time.time() + FLAGS.run_stage_time
   run_number = 0
+  consecutive_failures = 0
   while True:
-    logging.info('Running benchmark %s', name)
+    samples = []
+    logging.info('Running benchmark %s', spec.name)
     events.before_phase.send(events.RUN_PHASE, benchmark_spec=spec)
     try:
       with timer.Measure('Benchmark Run'):
-        samples = benchmark.Run(spec)
+        samples = spec.BenchmarkRun(spec)
+      if (FLAGS.boot_samples or
+          spec.name == cluster_boot_benchmark.BENCHMARK_NAME):
+        samples.extend(cluster_boot_benchmark.GetTimeToBoot(spec.vms))
+    except Exception:
+      consecutive_failures += 1
+      if consecutive_failures > FLAGS.run_stage_retries:
+        raise
+      logging.exception('Run failed (consecutive_failures=%s); retrying.',
+                        consecutive_failures)
+    else:
+      consecutive_failures = 0
     finally:
       events.after_phase.send(events.RUN_PHASE, benchmark_spec=spec)
+    events.samples_created.send(
+        events.RUN_PHASE, benchmark_spec=spec, samples=samples)
     if FLAGS.run_stage_time:
       for sample in samples:
         sample.metadata['run_number'] = run_number
-    collector.AddSamples(samples, name, spec)
+    collector.AddSamples(samples, spec.name, spec)
     if FLAGS.publish_after_run:
       collector.PublishSamples()
     run_number += 1
@@ -395,25 +450,23 @@ def DoRunPhase(benchmark, name, spec, collector, timer):
       break
 
 
-def DoCleanupPhase(benchmark, name, spec, timer):
+def DoCleanupPhase(spec, timer):
   """Performs the Cleanup phase of benchmark execution.
 
   Args:
-    benchmark: The benchmark module.
-    name: A string containing the benchmark name.
     spec: The BenchmarkSpec created for the benchmark.
     timer: An IntervalTimer that measures the start and stop times of the
       benchmark module's Cleanup function.
   """
-  logging.info('Cleaning up benchmark %s', name)
+  logging.info('Cleaning up benchmark %s', spec.name)
 
   if spec.always_call_cleanup or any([vm.is_static for vm in spec.vms]):
     spec.StopBackgroundWorkload()
     with timer.Measure('Benchmark Cleanup'):
-      benchmark.Cleanup(spec)
+      spec.BenchmarkCleanup(spec)
 
 
-def DoTeardownPhase(name, spec, timer):
+def DoTeardownPhase(spec, timer):
   """Performs the Teardown phase of benchmark execution.
 
   Args:
@@ -422,122 +475,115 @@ def DoTeardownPhase(name, spec, timer):
     timer: An IntervalTimer that measures the start and stop times of
       resource teardown.
   """
-  logging.info('Tearing down resources for benchmark %s', name)
+  logging.info('Tearing down resources for benchmark %s', spec.name)
 
   with timer.Measure('Resource Teardown'):
     spec.Delete()
 
 
-def _GetBenchmarkSpec(benchmark_config, benchmark_name, benchmark_uid):
-  """Creates a BenchmarkSpec or loads one from a file.
-
-  During the provision stage, creates a BenchmarkSpec from the provided
-  configuration. During any later stage, loads the BenchmarkSpec that was
-  created during the provision stage from a file.
-
-  Args:
-    benchmark_config: BenchmarkConfigSpec. The benchmark configuration to use
-        while running the current stage.
-    benchmark_name: string. Name of the benchmark.
-    benchmark_uid: string. Identifies a specific run of a benchmark.
-
-  Returns:
-    The created or loaded BenchmarkSpec.
-  """
-  if stages.PROVISION in FLAGS.run_stage:
-    return benchmark_spec.BenchmarkSpec(benchmark_config, benchmark_name,
-                                        benchmark_uid)
-  else:
-    try:
-      return benchmark_spec.BenchmarkSpec.GetSpecFromFile(benchmark_uid,
-                                                          benchmark_config)
-    except IOError:
-      if FLAGS.run_stage == [stages.PREPARE]:
-        logging.error(
-            'We were unable to load the BenchmarkSpec. This may be related '
-            'to two additional run stages which have recently been added. '
-            'Please make sure to run the stage "provision" before "prepare". '
-            'Similarly, make sure to run "teardown" after "cleanup".')
-      raise
-
-
-def RunBenchmark(benchmark, sequence_number, total_benchmarks, benchmark_config,
-                 benchmark_uid, collector):
+def RunBenchmark(spec, collector):
   """Runs a single benchmark and adds the results to the collector.
 
   Args:
-    benchmark: The benchmark module to be run.
-    sequence_number: The sequence number of when the benchmark was started
-        relative to the other benchmarks in the suite.
-    total_benchmarks: The total number of benchmarks in the suite.
-    benchmark_config: BenchmarkConfigSpec. The config to run the benchmark with.
-    benchmark_uid: An identifier unique to this run of the benchmark even
-        if the same benchmark is run multiple times with different configs.
+    spec: The BenchmarkSpec object with run information.
     collector: The SampleCollector object to add samples to.
   """
-  benchmark_name = benchmark.BENCHMARK_NAME
-
+  spec.status = benchmark_status.FAILED
   # Modify the logger prompt for messages logged within this function.
   label_extension = '{}({}/{})'.format(
-      benchmark_name, sequence_number, total_benchmarks)
+      spec.name, spec.sequence_number, spec.total_benchmarks)
+  context.SetThreadBenchmarkSpec(spec)
   log_context = log_util.GetThreadLogContext()
   with log_context.ExtendLabel(label_extension):
-    spec = _GetBenchmarkSpec(benchmark_config, benchmark_name, benchmark_uid)
     with spec.RedirectGlobalFlags():
       end_to_end_timer = timing_util.IntervalTimer()
       detailed_timer = timing_util.IntervalTimer()
       try:
         with end_to_end_timer.Measure('End to End'):
           if stages.PROVISION in FLAGS.run_stage:
-            DoProvisionPhase(benchmark_name, spec, detailed_timer)
+            DoProvisionPhase(spec, detailed_timer)
 
           if stages.PREPARE in FLAGS.run_stage:
-            DoPreparePhase(benchmark, benchmark_name, spec, detailed_timer)
+            DoPreparePhase(spec, detailed_timer)
 
           if stages.RUN in FLAGS.run_stage:
-            DoRunPhase(benchmark, benchmark_name, spec, collector,
-                       detailed_timer)
+            DoRunPhase(spec, collector, detailed_timer)
 
           if stages.CLEANUP in FLAGS.run_stage:
-            DoCleanupPhase(benchmark, benchmark_name, spec, detailed_timer)
+            DoCleanupPhase(spec, detailed_timer)
 
           if stages.TEARDOWN in FLAGS.run_stage:
-            DoTeardownPhase(benchmark_name, spec, detailed_timer)
+            DoTeardownPhase(spec, detailed_timer)
 
-        # Add samples for any timed interval that was measured.
-        include_end_to_end = timing_util.EndToEndRuntimeMeasurementEnabled()
-        include_runtimes = timing_util.RuntimeMeasurementsEnabled()
-        include_timestamps = timing_util.TimestampMeasurementsEnabled()
-        if FLAGS.run_stage == stages.STAGES:
-          # Ran all stages.
+        # Add timing samples.
+        if (FLAGS.run_stage == stages.STAGES and
+            timing_util.EndToEndRuntimeMeasurementEnabled()):
           collector.AddSamples(
-              end_to_end_timer.GenerateSamples(
-                  include_runtime=include_end_to_end or include_runtimes,
-                  include_timestamps=include_timestamps),
-              benchmark_name, spec)
-        collector.AddSamples(detailed_timer.GenerateSamples(include_runtimes,
-                                                            include_timestamps),
-                             benchmark_name, spec)
+              end_to_end_timer.GenerateSamples(), spec.name, spec)
+        if timing_util.RuntimeMeasurementsEnabled():
+          collector.AddSamples(
+              detailed_timer.GenerateSamples(), spec.name, spec)
 
       except:
         # Resource cleanup (below) can take a long time. Log the error to give
         # immediate feedback, then re-throw.
-        logging.exception('Error during benchmark %s', benchmark_name)
+        logging.exception('Error during benchmark %s', spec.name)
         # If the particular benchmark requests us to always call cleanup, do it
         # here.
         if stages.CLEANUP in FLAGS.run_stage and spec.always_call_cleanup:
-          DoCleanupPhase(benchmark, benchmark_name, spec, detailed_timer)
+          DoCleanupPhase(spec, detailed_timer)
         raise
       finally:
         if stages.TEARDOWN in FLAGS.run_stage:
           spec.Delete()
+        events.benchmark_end.send(benchmark_spec=spec)
         # Pickle spec to save final resource state.
-        spec.PickleSpec()
+        spec.Pickle()
+  spec.status = benchmark_status.SUCCEEDED
+
+
+def RunBenchmarkTask(spec):
+  """Task that executes RunBenchmark.
+
+  This is designed to be used with RunParallelProcesses.
+
+  Arguments:
+    spec: BenchmarkSpec. The spec to call RunBenchmark with.
+
+  Returns:
+    A tuple of BenchmarkSpec, list of samples.
+  """
+  if _TEARDOWN_EVENT.is_set():
+    return spec, []
+
+  # Many providers name resources using run_uris. When running multiple
+  # benchmarks in parallel, this causes name collisions on resources.
+  # By modifying the run_uri, we avoid the collisions.
+  if FLAGS.run_processes > 1:
+    spec.config.flags['run_uri'] = FLAGS.run_uri + str(spec.sequence_number)
+
+  collector = SampleCollector()
+  try:
+    RunBenchmark(spec, collector)
+  except BaseException as e:
+    msg = 'Benchmark {0}/{1} {2} (UID: {3}) failed.'.format(
+        spec.sequence_number, spec.total_benchmarks, spec.name, spec.uid)
+    if isinstance(e, KeyboardInterrupt) or FLAGS.stop_after_benchmark_failure:
+      logging.error('%s Execution will not continue.', msg)
+      _TEARDOWN_EVENT.set()
+    else:
+      logging.error('%s Execution will continue.', msg)
+  finally:
+    # We need to return both the spec and samples so that we know
+    # the status of the test and can publish any samples that
+    # haven't yet been published.
+    return spec, collector.samples
 
 
 def _LogCommandLineFlags():
   result = []
-  for flag in FLAGS.FlagDict().values():
+  for name in FLAGS:
+    flag = FLAGS[name]
     if flag.present:
       result.append(flag.Serialize())
   logging.info('Flag values:\n%s', '\n'.join(result))
@@ -601,35 +647,28 @@ def RunBenchmarks():
   Returns:
     Exit status for the process.
   """
-  benchmark_run_list = _CreateBenchmarkRunList()
+  benchmark_specs = _CreateBenchmarkSpecs()
   collector = SampleCollector()
+
   try:
-    for run_args, run_status_list in benchmark_run_list:
-      benchmark_module, sequence_number, _, _, benchmark_uid = run_args
-      benchmark_name = benchmark_module.BENCHMARK_NAME
-      try:
-        run_status_list[2] = benchmark_status.FAILED
-        RunBenchmark(*run_args, collector=collector)
-        run_status_list[2] = benchmark_status.SUCCEEDED
-      except BaseException as e:
-        msg = 'Benchmark {0}/{1} {2} (UID: {3}) failed.'.format(
-            sequence_number, len(benchmark_run_list), benchmark_name,
-            benchmark_uid)
-        if (isinstance(e, KeyboardInterrupt) or
-            FLAGS.stop_after_benchmark_failure):
-          logging.error('%s Execution will not continue.', msg)
-          break
-        else:
-          logging.error('%s Execution will continue.', msg)
+    tasks = [(RunBenchmarkTask, (spec,), {})
+             for spec in benchmark_specs]
+    spec_sample_tuples = background_tasks.RunParallelProcesses(
+        tasks, FLAGS.run_processes)
+    benchmark_specs, sample_lists = zip(*spec_sample_tuples)
+    for sample_list in sample_lists:
+      collector.samples.extend(sample_list)
+
   finally:
     if collector.samples:
       collector.PublishSamples()
 
-    if benchmark_run_list:
-      run_status_lists = tuple(r for _, r in benchmark_run_list)
-      logging.info(benchmark_status.CreateSummary(run_status_lists))
+    if benchmark_specs:
+      logging.info(benchmark_status.CreateSummary(benchmark_specs))
+
     logging.info('Complete logs can be found at: %s',
                  vm_util.PrependTempDir(LOG_FILE_NAME))
+
 
   if stages.TEARDOWN not in FLAGS.run_stage:
     logging.info(
@@ -639,8 +678,8 @@ def RunBenchmarks():
     archive.ArchiveRun(vm_util.GetTempDir(), FLAGS.archive_bucket,
                        gsutil_path=FLAGS.gsutil_path,
                        prefix=FLAGS.run_uri + '_')
-  all_benchmarks_succeeded = all(r[2] == benchmark_status.SUCCEEDED
-                                 for _, r in benchmark_run_list)
+  all_benchmarks_succeeded = all(spec.status == benchmark_status.SUCCEEDED
+                                 for spec in benchmark_specs)
   return 0 if all_benchmarks_succeeded else 1
 
 
@@ -679,6 +718,9 @@ def Main():
   log_util.ConfigureBasicLogging()
   _InjectBenchmarkInfoIntoDocumentation()
   _ParseFlags()
+  if FLAGS.helpmatch:
+    _PrintHelp(FLAGS.helpmatch)
+    return 0
   CheckVersionFlag()
   SetUpPKB()
   return RunBenchmarks()

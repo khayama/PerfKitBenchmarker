@@ -27,6 +27,7 @@ from perfkitbenchmarker import providers
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.configs import benchmark_config_spec
 from perfkitbenchmarker.providers.gcp import gce_virtual_machine
+from perfkitbenchmarker.providers.gcp import util
 from tests import mock_flags
 
 
@@ -193,30 +194,35 @@ class GceVirtualMachineTestCase(unittest.TestCase):
 
   def testVmWithMachineTypeNonPreemptible(self):
     spec = gce_virtual_machine.GceVmSpec(
-        _COMPONENT, machine_type='test_machine_type')
+        _COMPONENT, machine_type='test_machine_type', project='p')
     vm = gce_virtual_machine.GceVirtualMachine(spec)
     self.assertEqual(vm.GetMachineTypeDict(), {
-        'machine_type': 'test_machine_type'})
+        'machine_type': 'test_machine_type', 'project': 'p'})
 
   def testVmWithMachineTypePreemptible(self):
     spec = gce_virtual_machine.GceVmSpec(
-        _COMPONENT, machine_type='test_machine_type', preemptible=True)
+        _COMPONENT, machine_type='test_machine_type', preemptible=True,
+        project='p')
     vm = gce_virtual_machine.GceVirtualMachine(spec)
     self.assertEqual(vm.GetMachineTypeDict(), {
-        'machine_type': 'test_machine_type', 'preemptible': True})
+        'machine_type': 'test_machine_type', 'preemptible': True,
+        'project': 'p'})
 
   def testCustomVmNonPreemptible(self):
     spec = gce_virtual_machine.GceVmSpec(_COMPONENT, machine_type={
-        'cpus': 1, 'memory': '1.0GiB'})
+        'cpus': 1, 'memory': '1.0GiB'}, project='p')
     vm = gce_virtual_machine.GceVirtualMachine(spec)
-    self.assertEqual(vm.GetMachineTypeDict(), {'cpus': 1, 'memory_mib': 1024})
+    self.assertEqual(vm.GetMachineTypeDict(),
+                     {'cpus': 1, 'memory_mib': 1024, 'project': 'p'})
 
   def testCustomVmPreemptible(self):
     spec = gce_virtual_machine.GceVmSpec(
         _COMPONENT, machine_type={'cpus': 1, 'memory': '1.0GiB'},
-        preemptible=True)
+        preemptible=True,
+        project='fakeproject')
     vm = gce_virtual_machine.GceVirtualMachine(spec)
     self.assertEqual(vm.GetMachineTypeDict(), {'cpus': 1, 'memory_mib': 1024,
+                                               'project': 'fakeproject',
                                                'preemptible': True})
 
 
@@ -236,14 +242,15 @@ class GCEVMFlagsTestCase(unittest.TestCase):
     config_spec = benchmark_config_spec.BenchmarkConfigSpec(
         _BENCHMARK_NAME, flag_values=self._mocked_flags, vm_groups={})
     self._benchmark_spec = benchmark_spec.BenchmarkSpec(
-        config_spec, _BENCHMARK_NAME, _BENCHMARK_UID)
+        mock.MagicMock(), config_spec, _BENCHMARK_UID)
 
   @contextlib.contextmanager
   def _PatchCriticalObjects(self):
     """A context manager that patches a few critical objects with mocks."""
     with mock.patch(vm_util.__name__ + '.IssueCommand') as issue_command, \
             mock.patch('__builtin__.open'), \
-            mock.patch(vm_util.__name__ + '.NamedTemporaryFile'):
+            mock.patch(vm_util.__name__ + '.NamedTemporaryFile'), \
+            mock.patch(util.__name__ + '.GetDefaultProject'):
       yield issue_command
 
   def testPreemptibleVMFlag(self):

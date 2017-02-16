@@ -1,3 +1,143 @@
+# v1.10.0
+
+External contributions:
+- Re-write flag_util_test.py so it's easier to read (thanks @yilei GH-1244)
+- Fix bug that prevents running bonnie++ on Azure (thanks @rgodha GH-1218)
+- Add kernel compile benchmark (thanks @maggiejiao GH-1215, GH-1255)
+- Change the documentation to reflect that work should be on master (thanks
+  @besanradwan GH-1209)
+- Add flags to capture latency, bandwidth and IOPS logs in Fio benchmark (thanks @meteorfox GH-1205)
+- Re-add 'vm_util' object to fix broken master branch (thanks @vhe182 GH-1196)
+- Add EPEL Repo to Silo Installation (thanks @akrzos GH-1153)
+
+New features:
+- Add GPU PCIe bandwidth test (GH-1234, GH-1250, GH-1252, GH-1254)
+- Add blazemark (GH-1145)
+- Add simple memcached ycsb benchmark based on aerospike ycsb benchmark (GH-1199)
+- Add scimark2 installation package (GH-1185)
+
+Enhancements:
+- Use FLAGS.aws_user_name if set for Rhel (GH-1249)
+- Fio enhancements (GH-1246)
+- Use aes128-ctr if aes128-cbc isn't available (GH-1242)
+- Make aeropsike able to run with raw devices on static vms (GH-1243)
+- Add some metadata to netperf samples (GH-1236)
+- Remove unneeded Azure code and add availability sets (GH-1232)
+- Add cassandra read concurrency flag (GH-1233)
+- Add a metadata attribute 'ssd_count' to spark_service (GH-1229)
+- Add a metadata attribute 'spark_svc_cloud' to spark_service (GH-1226)
+- Add ability to specify boot_disk_size in AWS vm spec (GH-1231)
+- Add a metadata attribute 'spark_svc_cloud' (GH-1236)
+- Set a default zone for the spark test to allow for subnet creation (GH-1222)
+- Update the location of the spark examples jar on the emr cluster (GH-1222)
+- Persist package installation across reboots (GH-1185)
+- Allow mongodb_ycsb to specify readahead settings (GH-1256)
+
+Bug fixes and maintenance updates:
+- Close Aersospike connection in 1 second (GH-1241)
+- Fix bug with having multiple Azure data disks (GH-1223)
+- Fix aws spark service (GH-1222)
+- Add some git ignore entries (GH-1222)
+- Fix gcs credential conflict (GH-1221)
+- Fix bug with run_processes (GH-1212)
+- Remove collector from RunBenchmarkTask args (GH-1210)
+- Add the minimum tox version to the "tox is not installed" message (GH-1201)
+- Move sysbench05plus path prefix logic into package (GH-1185)
+- Fix bug with specifying Azure image (GH-1204)
+- Fix two files that were failing boilerplate check (GH-1203)
+- Update README.md (GH-1200)
+
+# 1.9.0
+
+New features:
+- Add config file imports and allow for circular imports and add documentation (GH-1163)
+- Add a way to run benchmarks in parallel (GH-1192)
+
+Enhancements:
+- ContainerizedDebianMixin: Ping to a fixed docker image and remove the sudo hack (GH-1171)
+- Auto detect  openjdk, libsnappy package versions (GH-1181)
+- Add flags to govern subnet creation and Optionally create only 1 subnet (GH-1182)
+- Install docker images as packages (GH-1184)
+- Call FLAGS.get_help if it's available (GH-1187)
+- Publish boot time samples for all tests (GH-1156)
+
+Bugfixes and maintenance updates:
+- Update requirements.txt to set version of contextlib2 (GH-1164)
+- Fix bug with config flags (GH-1165)
+- Updated the cloudsuite web-serving benchmark (thanks @nooshin-mirzadeh, GH-1166)
+- Fix load command parsing (GH-1168)
+- openstack: Open all TCP and UDP ports for the internal network (GH-1169)
+- Fix aerospike metadata (GH-1170)
+- Adjust aerospike default replication factor (GH-1172)
+- Try replacing FlagValues._flags instead of FlagValues.FlagDict first (GH-1175)
+- Fix ycsb aggregator (GH-1176)
+- Fix bug during cleanup phase of object_storage_service benchmark (GH-1178)
+- Netperf thinktime fixes and support think time in nanoseconds instead of microseconds (GH-1179, GH-1186, GH-1188)
+- Fix sysbench05plus installation on ubuntu16.04 (GH-1183)
+- Fix race condition in Aerospike benchmark (GH-1190)
+- Clean up some pickling, unpickling issues (GH-1191)
+- Calculate free ram with more robust /proc/meminfo instead of `free`(GH-1194)
+- Fix multithread netperf (GH-1149)
+- Multiple fixes and refactoring of the linux package management on vms (GH-1152)
+- Fix dstat metadata in Analyze (GH-1154)
+- Obey flag overrides for static vm specs (GH-1155)
+- Fix links in README file for OpenStack and Cloudstack setup steps (thanks @shakhat, GH-1157)
+- Fix issue with GetConfig using flags (GH-1160)
+- Remove scratch disk from netperf and object_storage_service benchmark (GH-1147, GH-1148)
+- Netperf changes to add num_streams metadata to samples (GH-1177)
+
+# 1.8.1
+
+Bugfixes and maintanence updates:
+- Fixed default machine type for Azure (GH-1161)
+
+# 1.8.0
+
+New features:
+- Multithreaded netperf benchmark (GH-1141, GH-1144)
+- Terasort benchmark using spark service infrastructure (GH-1104)
+- Support 10 or more disks on Azure (GH-1102)
+- Add sysctl and set_files flags (GH-1096)
+- Support DigitalOcean block storage (GH-1092)
+- Add cloudsuite_data_serving_rec_count and cloudsuite_data_serving_op_count parameters to cloudsuite_data_serving benchmark (GH-1091)
+- Add support for setting GCE boot disk size and type (GH-1106)
+- Add flag to skip reload on ycsb benchmark (GH-1108)
+- Support for AWS dedicated hosts (GH-1109)
+- Object storage multistream write-only scenario (GH-1123)
+- Allow multiple configs for the same benchmark in the same file (GH-1126)
+- Add flat that allows run retries (GH-1129)
+- Add fio_parameters flag (GH-1131)
+- Add config matrices (GH-1134)
+- Add events at the beginning and end of benchmarks (GH-1135)
+- Add extra_zones flag to pkb (GH-1137)
+- Add flag matrix filters (GH-1138)
+- Support allowing port ranges on Firewall.AllowPort (GH-1139)
+- Add static vm tags (GH-1142)
+
+Breaking changes:
+- Because of GH-1112, region names have changed.
+
+Enhancements:
+- Allow speccpu to run individual test (GH-1113)
+- Use Azure resource management mode (GH-1112)
+- GCP networks use subnets (GH-1087)
+- Add top level flags key to configs (GH-1125)
+- Precise resource usage for YCSB benchmarks (GH-1127)
+
+Bugfixes and maintanence updates:
+- Fix bugs with Terasort (GH-1136)
+- Don't run container commands as sudo with ContainerizedDebianMixin (GH-1130)
+- Automatically use amazon linux if os_type is rhel (GH-1124)
+- Removed Panda as a dependency (GH-1118, GH-1119)
+- Allow flag_util.ParseKeyValuePairs values to have colons in them (GH-1117)
+- Add ycsb to data directory (GH-1116)
+- Fix bug in mongodb_ycsb_benchmark cleanup (GH-1115)
+- Fix bug where static VM disk specs were overriden (GH-1105)
+- Use string formatting instead of addition to concatenate (GH-1103)
+- Fixed regression with fio flag (GH-1097)
+- Fix flags in static vm files (GH-1093)
+- Fix wait_for_command.py: wait for status file to avoid race condition (GH-1090)
+
 # 1.7.0
 
 New features:
@@ -833,7 +973,6 @@ Fixes:
 * Fixed corner cases in SPEC 2006 causing it to fail on large instances.
 
 # v0.1
-
 * Support static vms (i.e. machine not provisioned via Cloud APIs. We call all machines VMs). All static VMs provided will be used before any non-static VMs are provisioned.
 * See static_virtual_machine.py for detailed description.
 * Added copy benchmark.

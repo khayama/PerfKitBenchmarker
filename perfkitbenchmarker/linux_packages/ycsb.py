@@ -47,18 +47,21 @@ import logging
 import operator
 import os
 import posixpath
+import time
 
 from perfkitbenchmarker import data
+from perfkitbenchmarker import events
 from perfkitbenchmarker import flags
 from perfkitbenchmarker import sample
 from perfkitbenchmarker import vm_util
+from perfkitbenchmarker.linux_packages import INSTALL_DIR
 
 FLAGS = flags.FLAGS
 
 YCSB_VERSION = '0.9.0'
 YCSB_TAR_URL = ('https://github.com/brianfrankcooper/YCSB/releases/'
                 'download/{0}/ycsb-{0}.tar.gz').format(YCSB_VERSION)
-YCSB_DIR = posixpath.join(vm_util.VM_TMP_DIR, 'ycsb')
+YCSB_DIR = posixpath.join(INSTALL_DIR, 'ycsb')
 YCSB_EXE = posixpath.join(YCSB_DIR, 'bin', 'ycsb')
 
 _DEFAULT_PERCENTILES = 50, 75, 90, 95, 99, 99.9
@@ -72,6 +75,9 @@ AGGREGATE_OPERATORS = {
     'Return=-1': operator.add,
     'Return=-2': operator.add,
     'Return=-3': operator.add,
+    'Return=OK': operator.add,
+    'Return=ERROR': operator.add,
+    'LatencyVariance(ms)': None,
     'AverageLatency(ms)': None,  # Requires both average and # of ops.
     'Throughput(ops/sec)': operator.add,
     '95thPercentileLatency(ms)': None,  # Calculated across clients.
@@ -88,9 +94,13 @@ flags.DEFINE_boolean('ycsb_load_samples', True, 'Include samples '
 flags.DEFINE_boolean('ycsb_include_individual_results', False,
                      'Include results from each client VM, rather than just '
                      'combined results.')
+flags.DEFINE_boolean('ycsb_reload_database', True,
+                     'Reload database, othewise skip load stage. '
+                     'Note, this flag is only used if the database '
+                     'is already loaded.')
 flags.DEFINE_integer('ycsb_client_vms', 1, 'Number of YCSB client VMs.',
                      lower_bound=1)
-flags.DEFINE_list('ycsb_workload_files', [],
+flags.DEFINE_list('ycsb_workload_files', ['workloada', 'workloadb'],
                   'Path to YCSB workload file to use during *run* '
                   'stage only. Comma-separated list')
 flags.DEFINE_list('ycsb_load_parameters', [],
@@ -131,10 +141,8 @@ def _GetWorkloadFileList():
       * The argument to --ycsb_workload_files.
       * Bundled YCSB workloads A and B.
   """
-  if FLAGS.ycsb_workload_files:
-    return FLAGS.ycsb_workload_files
-  return [data.ResourcePath(os.path.join('ycsb', workload))
-          for workload in ('workloada', 'workloadb')]
+  return [data.ResourcePath(workload)
+          for workload in FLAGS.ycsb_workload_files]
 
 
 def CheckPrerequisites():
@@ -492,6 +500,7 @@ class YCSBExecutor(object):
 
   Attributes:
     database: str.
+    loaded: boolean. If the database is already loaded.
     parameters: dict. May contain the following, plus database-specific fields
       (e.g., columnfamily for HBase).
 
@@ -519,6 +528,7 @@ class YCSBExecutor(object):
 
   def __init__(self, database, parameter_files=None, **kwargs):
     self.database = database
+    self.loaded = False
     self.parameter_files = parameter_files or []
     self.parameters = kwargs.copy()
     # Self-defined parameters, pop them out of self.parameters, so they
@@ -563,8 +573,8 @@ class YCSBExecutor(object):
       param, value = pv.split('=', 1)
       kwargs[param] = value
     command = self._BuildCommand('load', **kwargs)
-    stdout, _ = vm.RobustRemoteCommand(command)
-    return ParseResults(str(stdout))
+    stdout, stderr = vm.RobustRemoteCommand(command)
+    return ParseResults(str(stderr + stdout))
 
   def _LoadThreaded(self, vms, workload_file, **kwargs):
     """Runs "Load" in parallel for each VM in VMs.
@@ -579,7 +589,7 @@ class YCSBExecutor(object):
     """
     results = []
 
-    remote_path = posixpath.join(vm_util.VM_TMP_DIR,
+    remote_path = posixpath.join(INSTALL_DIR,
                                  os.path.basename(workload_file))
     kwargs.setdefault('threads', self._default_preload_threads)
     kwargs.setdefault('recordcount', FLAGS.ycsb_record_count)
@@ -614,7 +624,11 @@ class YCSBExecutor(object):
       results.append(self._Load(vms[loader_index], **kw))
       logging.info('VM %d (%s) finished', loader_index, vms[loader_index])
 
+    start = time.time()
     vm_util.RunThreaded(_Load, range(len(vms)))
+    events.record_event.send(
+        type(self).__name__, event='load', start_timestamp=start,
+        end_timestamp=time.time(), metadata=copy.deepcopy(kwargs))
 
     if len(results) != len(vms):
       raise IOError('Missing results: only {0}/{1} reported\n{2}'.format(
@@ -710,7 +724,7 @@ class YCSBExecutor(object):
       if FLAGS.ycsb_timelimit:
         parameters['maxexecutiontime'] = FLAGS.ycsb_timelimit
       parameters.update(kwargs)
-      remote_path = posixpath.join(vm_util.VM_TMP_DIR,
+      remote_path = posixpath.join(INSTALL_DIR,
                                    os.path.basename(workload_file))
 
       with open(workload_file) as fp:
@@ -727,7 +741,11 @@ class YCSBExecutor(object):
       parameters['parameter_files'] = [remote_path]
       for client_count in _GetThreadsPerLoaderList():
         parameters['threads'] = client_count
+        start = time.time()
         results = self._RunThreaded(vms, **parameters)
+        events.record_event.send(
+            type(self).__name__, event='run', start_timestamp=start,
+            end_timestamp=time.time(), metadata=copy.deepcopy(parameters))
         client_meta = workload_meta.copy()
         client_meta.update(clients=len(vms) * client_count,
                            threads_per_client_vm=client_count)
@@ -769,9 +787,12 @@ class YCSBExecutor(object):
       List of sample.Sample objects.
     """
     workloads = workloads or _GetWorkloadFileList()
+    load_samples = []
     assert workloads, 'no workloads'
-    load_samples = list(self._LoadThreaded(vms, workloads[0],
-                                           **(load_kwargs or {})))
+    if FLAGS.ycsb_reload_database or not self.loaded:
+        load_samples += list(self._LoadThreaded(
+            vms, workloads[0], **(load_kwargs or {})))
+        self.loaded = True
     run_samples = list(self.RunStaircaseLoads(vms, workloads,
                                               **(run_kwargs or {})))
     if FLAGS.ycsb_load_samples:

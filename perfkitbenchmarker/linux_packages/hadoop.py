@@ -26,6 +26,7 @@ import time
 from perfkitbenchmarker import data
 from perfkitbenchmarker import regex_util
 from perfkitbenchmarker import vm_util
+from perfkitbenchmarker.linux_packages import INSTALL_DIR
 
 HADOOP_VERSION = '2.7.3'
 HADOOP_URL = ('http://www.us.apache.org/dist/hadoop/common/hadoop-{0}/'
@@ -36,7 +37,7 @@ DATA_FILES = ['hadoop/core-site.xml.j2', 'hadoop/yarn-site.xml.j2',
               'hadoop/hadoop-env.sh.j2', 'hadoop/slaves.j2']
 START_HADOOP_SCRIPT = 'hadoop/start-hadoop.sh.j2'
 
-HADOOP_DIR = posixpath.join(vm_util.VM_TMP_DIR, 'hadoop')
+HADOOP_DIR = posixpath.join(INSTALL_DIR, 'hadoop')
 HADOOP_BIN = posixpath.join(HADOOP_DIR, 'bin')
 HADOOP_SBIN = posixpath.join(HADOOP_DIR, 'sbin')
 HADOOP_CONF_DIR = posixpath.join(HADOOP_DIR, 'etc', 'hadoop')
@@ -69,17 +70,25 @@ def YumInstall(vm):
 
 def AptInstall(vm):
   """Installs Hadoop on the VM."""
-  vm.InstallPackages('libsnappy1 libsnappy-dev')
+  libsnappy = 'libsnappy1'
+  if not vm.HasPackage(libsnappy):
+    # libsnappy's name on ubuntu16.04 is libsnappy1v5. Let's try that instead.
+    libsnappy = 'libsnappy1v5'
+  vm.InstallPackages('%s libsnappy-dev' % libsnappy)
   _Install(vm)
 
 
 # TODO: revisit memory fraction.
 def _RenderConfig(vm, master_ip, worker_ips, memory_fraction=0.9):
   yarn_memory_mb = int((vm.total_memory_kb / 1024) * memory_fraction)
+  if vm.scratch_disks:
+    scratch_dir = posixpath.join(vm.GetScratchDir(), 'hadoop')
+  else:
+    scratch_dir = posixpath.join('/tmp/pkb/local_scratch', 'hadoop')
   context = {
       'master_ip': master_ip,
       'worker_ips': worker_ips,
-      'scratch_dir': posixpath.join(vm.GetScratchDir(), 'hadoop'),
+      'scratch_dir': scratch_dir,
       'vcpus': vm.num_cpus,
       'hadoop_private_key': HADOOP_PRIVATE_KEY,
       'yarn_memory_mb': yarn_memory_mb

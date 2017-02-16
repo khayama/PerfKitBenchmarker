@@ -35,6 +35,11 @@ flags.DEFINE_string(
     'https://cloud.google.com/sdk/gcloud/reference/compute/disks/create')
 flags.DEFINE_string('gce_network_name', None, 'The name of an already created '
                     'network to use instead of creating a new one.')
+flags.DEFINE_string('gce_subnet_region', None, 'Region to create subnet in '
+                    'instead of automatically creating one in every region.')
+flags.DEFINE_string('gce_subnet_addr', '10.128.0.0/20', 'Address range to the '
+                    'subnet, given in CDR notation. Not used unless '
+                    '--gce_subnet_region is given.')
 flags.DEFINE_multistring(
     'gcp_instance_metadata_from_file',
     [],
@@ -53,3 +58,7 @@ flags.DEFINE_multistring(
     'by commas. This option can be repeated multiple times. For information '
     'about GCP instance metadata, see: --metadata from '
     '`gcloud help compute instances create`.')
+flags.DEFINE_integer('gce_boot_disk_size', None,
+                     'The boot disk size in GB for GCP VMs.')
+flags.DEFINE_enum('gce_boot_disk_type', None, ['pd-standard', 'pd-ssd'],
+                  'The boot disk type for GCP VMs.')

@@ -12,30 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 
-"""Module containing maven installation and cleanup functions."""
+from perfkitbenchmarker.linux_packages import INSTALL_DIR
 
-from perfkitbenchmarker import vm_util
-
-MVN_TAR = 'apache-maven-3.3.9-bin.tar.gz'
-MVN_URL = ('http://www.us.apache.org/dist/maven/maven-3/3.3.9/binaries/' +
-           MVN_TAR)
-MVN_DIR = '%s/apache-maven-3.3.9' % vm_util.VM_TMP_DIR
+URL = 'https://www.kernel.org/pub/linux/kernel/v4.x/linux-4.4.25.tar.gz'
+TARBALL = 'linux-4.4.25.tar.gz'
+UNTAR_DIR = 'linux-4.4.25'
+KERNEL_TARBALL = os.path.join(INSTALL_DIR, TARBALL)
 
 
 def _Install(vm):
-  """Installs the maven package on the VM."""
-  vm.Install('openjdk')
+  vm.Install('build_tools')
   vm.Install('wget')
-  vm.RemoteCommand('wget %s -P %s' % (MVN_URL, vm_util.VM_TMP_DIR))
-  vm.RemoteCommand('cd %s && tar xvzf %s' % (vm_util.VM_TMP_DIR, MVN_TAR))
-
-
-def YumInstall(vm):
-  """Installs the maven package on the VM."""
-  _Install(vm)
+  vm.InstallPackages('bc')
+  vm.RemoteCommand('mkdir -p {0} && '
+                   'cd {0} && wget {1}'.format(INSTALL_DIR, URL))
 
 
 def AptInstall(vm):
-  """Installs the maven package on the VM."""
   _Install(vm)
+
+
+def YumInstall(vm):
+  _Install(vm)
+
+
+def Cleanup(vm):
+  vm.RemoteCommand('cd {} && rm -f {}'.format(INSTALL_DIR, TARBALL))

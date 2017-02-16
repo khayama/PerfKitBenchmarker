@@ -34,6 +34,7 @@ from perfkitbenchmarker.providers.azure import azure_disk
 from perfkitbenchmarker.providers.azure import azure_virtual_machine
 from perfkitbenchmarker.providers.gcp import gce_disk
 from perfkitbenchmarker.providers.gcp import gce_virtual_machine
+from perfkitbenchmarker.providers.gcp import util
 from tests import mock_flags
 
 
@@ -71,6 +72,8 @@ class ScratchDiskTestMixin(object):
         mock.patch(vm_prefix + '.FormatDisk'))
     self.patches.append(
         mock.patch(vm_prefix + '.MountDisk'))
+    self.patches.append(
+        mock.patch(util.__name__ + '.GetDefaultProject'))
 
     # Patch subprocess.Popen to make sure we don't issue any commands to spin up
     # resources.
@@ -90,7 +93,7 @@ class ScratchDiskTestMixin(object):
     # VM Creation depends on there being a BenchmarkSpec.
     config_spec = benchmark_config_spec.BenchmarkConfigSpec(
         _BENCHMARK_NAME, flag_values=mocked_flags, vm_groups={})
-    self.spec = benchmark_spec.BenchmarkSpec(config_spec, _BENCHMARK_NAME,
+    self.spec = benchmark_spec.BenchmarkSpec(mock.MagicMock(), config_spec,
                                              _BENCHMARK_UID)
     self.addCleanup(context.SetThreadBenchmarkSpec, None)
 
@@ -175,7 +178,8 @@ class AwsScratchDiskTest(ScratchDiskTestMixin, unittest.TestCase):
     self.patches.append(mock.patch(aws_util.__name__ + '.AddDefaultTags'))
 
   def _CreateVm(self):
-    vm_spec = virtual_machine.BaseVmSpec('test_vm_spec.AWS', zone='us-east-1a')
+    vm_spec = aws_virtual_machine.AwsVmSpec('test_vm_spec.AWS',
+                                            zone='us-east-1a')
     return aws_virtual_machine.DebianBasedAwsVirtualMachine(vm_spec)
 
   def _GetDiskClass(self):

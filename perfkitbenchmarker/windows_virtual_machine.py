@@ -218,11 +218,7 @@ class WindowsMixin(virtual_machine.BaseOsMixin):
 
   def _TestReachable(self, ip):
     """Returns True if the VM can reach the ip address and False otherwise."""
-    try:
-      self.RemoteCommand('ping -n 1 %s' % ip)
-    except errors.VirtualMachine.RemoteCommandError:
-      return False
-    return True
+    return self.TryRemoteCommand('ping -n 1 %s' % ip)
 
   def DownloadFile(self, url, dest):
     """Downloads the content at the url to the specified destination."""
@@ -315,3 +311,11 @@ class WindowsMixin(virtual_machine.BaseOsMixin):
                  'assign mount=%s\n' % disk_spec.mount_point)
 
     self._RunDiskpartScript(script)
+
+  def SetReadAhead(self, num_sectors, devices):
+    """Set read-ahead value for block devices.
+    Args:
+      num_sectors: int. Number of sectors of read ahead.
+      devices: list of strings. A list of block devices.
+    """
+    raise NotImplementedError()

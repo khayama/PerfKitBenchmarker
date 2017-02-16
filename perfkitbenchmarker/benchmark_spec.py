@@ -24,14 +24,17 @@ import thread
 import threading
 import uuid
 
+from perfkitbenchmarker import benchmark_status
 from perfkitbenchmarker import context
 from perfkitbenchmarker import disk
+from perfkitbenchmarker import dpb_service
 from perfkitbenchmarker import errors
 from perfkitbenchmarker import flags
 from perfkitbenchmarker import os_types
 from perfkitbenchmarker import provider_info
 from perfkitbenchmarker import providers
 from perfkitbenchmarker import spark_service
+from perfkitbenchmarker import stages
 from perfkitbenchmarker import static_virtual_machine as static_vm
 from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker import vm_util
@@ -78,20 +81,24 @@ flags.DEFINE_enum('benchmark_compatibility_checking', SUPPORTED,
 class BenchmarkSpec(object):
   """Contains the various data required to make a benchmark run."""
 
-  def __init__(self, benchmark_config, benchmark_name, benchmark_uid):
+  total_benchmarks = 0
+
+  def __init__(self, benchmark_module, benchmark_config, benchmark_uid):
     """Initialize a BenchmarkSpec object.
 
     Args:
+      benchmark_module: The benchmark module object.
       benchmark_config: BenchmarkConfigSpec. The configuration for the
           benchmark.
-      benchmark_name: string. Name of the benchmark.
       benchmark_uid: An identifier unique to this run of the benchmark even
           if the same benchmark is run multiple times with different configs.
-      spark_service: The spark service configured for this benchmark.
     """
     self.config = benchmark_config
-    self.name = benchmark_name
+    self.name = benchmark_module.BENCHMARK_NAME
     self.uid = benchmark_uid
+    self.status = benchmark_status.SKIPPED
+    BenchmarkSpec.total_benchmarks += 1
+    self.sequence_number = BenchmarkSpec.total_benchmarks
     self.vms = []
     self.networks = {}
     self.firewalls = {}
@@ -99,12 +106,18 @@ class BenchmarkSpec(object):
     self.firewalls_lock = threading.Lock()
     self.vm_groups = {}
     self.deleted = False
-    self.file_name = os.path.join(vm_util.GetTempDir(), self.uid)
     self.uuid = '%s-%s' % (FLAGS.run_uri, uuid.uuid4())
     self.always_call_cleanup = False
     self.spark_service = None
+    self.dpb_service = None
 
     self._zone_index = 0
+
+    # Modules can't be pickled, but functions can, so we store the functions
+    # necessary to run the benchmark.
+    self.BenchmarkPrepare = benchmark_module.Prepare
+    self.BenchmarkRun = benchmark_module.Run
+    self.BenchmarkCleanup = benchmark_module.Cleanup
 
     # Set the current thread's BenchmarkSpec object to this one.
     context.SetThreadBenchmarkSpec(self)
@@ -120,6 +133,15 @@ class BenchmarkSpec(object):
     with self.config.RedirectFlags(FLAGS):
       yield
 
+  def ConstructDpbService(self):
+    """Create the dpb_service object and create groups for its vms."""
+    if self.config.dpb_service is None:
+      return
+    providers.LoadProvider(self.config.dpb_service.worker_group.cloud)
+    dpb_service_class = dpb_service.GetDpbServiceClass(
+        self.config.dpb_service.service_type)
+    self.dpb_service = dpb_service_class(self.config.dpb_service)
+
   def ConstructVirtualMachineGroup(self, group_name, group_spec):
     """Construct the virtual machine(s) needed for a group."""
     vms = []
@@ -129,7 +151,10 @@ class BenchmarkSpec(object):
 
     # First create the Static VM objects.
     if group_spec.static_vms:
-      for vm_spec in group_spec.static_vms[:vm_count]:
+      specs = [spec for spec in group_spec.static_vms
+               if (FLAGS.static_vm_tags is None or
+                   spec.tag in FLAGS.static_vm_tags)][:vm_count]
+      for vm_spec in specs:
         static_vm_class = static_vm.GetStaticVmClass(vm_spec.os_type)
         vms.append(static_vm_class(vm_spec))
 
@@ -157,13 +182,16 @@ class BenchmarkSpec(object):
 
     for _ in xrange(vm_count - len(vms)):
       # Assign a zone to each VM sequentially from the --zones flag.
-      if FLAGS.zones:
-        group_spec.vm_spec.zone = FLAGS.zones[self._zone_index]
+      if FLAGS.zones or FLAGS.extra_zones:
+        zone_list = FLAGS.zones + FLAGS.extra_zones
+        group_spec.vm_spec.zone = zone_list[self._zone_index]
         self._zone_index = (self._zone_index + 1
-                            if self._zone_index < len(FLAGS.zones) - 1
+                            if self._zone_index < len(zone_list) - 1
                             else 0)
       vm = self._CreateVirtualMachine(group_spec.vm_spec, os_type, cloud)
-      if disk_spec:
+      if disk_spec and not vm.is_static:
+        if disk_spec.disk_type == disk.LOCAL and disk_count is None:
+          disk_count = vm.max_local_disks
         vm.disk_specs = [copy.copy(disk_spec) for _ in xrange(disk_count)]
         # In the event that we need to create multiple disks from the same
         # DiskSpec, we need to ensure that they have different mount points.
@@ -232,17 +260,37 @@ class BenchmarkSpec(object):
 
       self.vm_groups[group_name] = vms
       self.vms.extend(vms)
+    # If we have a spark service, it needs to access the master_group and
+    # the worker group.
+    if (self.config.spark_service and
+        self.config.spark_service.service_type == spark_service.PKB_MANAGED):
+      for group_name in 'master_group', 'worker_group':
+        self.spark_service.vms[group_name] = self.vm_groups[group_name]
+
 
   def ConstructSparkService(self):
+    """Create the spark_service object and create groups for its vms."""
     if self.config.spark_service is None:
       return
 
-    providers.LoadProvider(self.config.spark_service.cloud)
-    spark_service_spec = self.config.spark_service
-    service_type = spark_service_spec.service_type
+    spark_spec = self.config.spark_service
+    # Worker group is required, master group is optional
+    cloud = spark_spec.worker_group.cloud
+    if spark_spec.master_group:
+      cloud = spark_spec.master_group.cloud
+    providers.LoadProvider(cloud)
+    service_type = spark_spec.service_type
     spark_service_class = spark_service.GetSparkServiceClass(
-        spark_service_spec.cloud, service_type)
-    self.spark_service = spark_service_class(spark_service_spec)
+        cloud, service_type)
+    self.spark_service = spark_service_class(spark_spec)
+    # If this is Pkb managed, the benchmark spec needs to adopt vms.
+    if service_type == spark_service.PKB_MANAGED:
+      for name, spec in [('master_group', spark_spec.master_group),
+                         ('worker_group', spark_spec.worker_group)]:
+        if name in self.config.vm_groups:
+          raise Exception('Cannot have a vm group {0} with a {1} spark '
+                          'service'.format(name, spark_service.PKB_MANAGED))
+        self.config.vm_groups[name] = spec
 
   def Prepare(self):
     targets = [(vm.PrepareBackgroundWorkload, (), {}) for vm in self.vms]
@@ -272,6 +320,8 @@ class BenchmarkSpec(object):
       vm_util.GenerateSSHConfig(sshable_vms, sshable_vm_groups)
     if self.spark_service:
       self.spark_service.Create()
+    if self.dpb_service:
+      self.dpb_service.Create()
 
   def Delete(self):
     if self.deleted:
@@ -279,6 +329,9 @@ class BenchmarkSpec(object):
 
     if self.spark_service:
       self.spark_service.Delete()
+
+    if self.dpb_service:
+      self.dpb_service.Delete()
 
     if self.vms:
       try:
@@ -377,38 +430,42 @@ class BenchmarkSpec(object):
     vm.Delete()
     vm.DeleteScratchDisks()
 
-  def PickleSpec(self):
+  @staticmethod
+  def _GetPickleFilename(uid):
+    """Returns the filename for the pickled BenchmarkSpec."""
+    return os.path.join(vm_util.GetTempDir(), uid)
+
+  def Pickle(self):
     """Pickles the spec so that it can be unpickled on a subsequent run."""
-    # Remove the config. It cannot be pickled because of an issue with how
-    # gflags dynamically defines a Checker function for flags with a lower_bound
-    # or upper_bound.
-    config, self.config = self.config, None
-    with open(self.file_name, 'wb') as pickle_file:
+    with open(self._GetPickleFilename(self.uid), 'wb') as pickle_file:
       pickle.dump(self, pickle_file, 2)
-    self.config = config
 
   @classmethod
-  def GetSpecFromFile(cls, name, config):
-    """Unpickles the spec and returns it.
+  def GetBenchmarkSpec(cls, benchmark_module, config, uid):
+    """Unpickles or creates a BenchmarkSpec and returns it.
 
     Args:
-      name: The name of the benchmark (and the name of the pickled file).
-      config: BenchmarkConfigSpec. The benchmark configuration to use while
-          running the current stage.
+      benchmark_module: The benchmark module object.
+      config: BenchmarkConfigSpec. The configuration for the benchmark.
+      uid: An identifier unique to this run of the benchmark even if the same
+          benchmark is run multiple times with different configs.
 
     Returns:
       A BenchmarkSpec object.
     """
-    file_name = '%s/%s' % (vm_util.GetTempDir(), name)
+    if stages.PROVISION in FLAGS.run_stage:
+      return cls(benchmark_module, config, uid)
+
     try:
-      with open(file_name, 'rb') as pickle_file:
+      with open(cls._GetPickleFilename(uid), 'rb') as pickle_file:
         spec = pickle.load(pickle_file)
     except Exception as e:  # pylint: disable=broad-except
-      logging.error('Unable to unpickle spec file for benchmark %s.', name)
+      logging.error('Unable to unpickle spec file for benchmark %s.',
+                    benchmark_module.BENCHMARK_NAME)
       raise e
-    spec.config = config
     # Always let the spec be deleted after being unpickled so that
     # it's possible to run cleanup even if cleanup has already run.
     spec.deleted = False
+    spec.status = benchmark_status.SKIPPED
     context.SetThreadBenchmarkSpec(spec)
     return spec

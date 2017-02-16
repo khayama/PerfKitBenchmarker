@@ -26,8 +26,7 @@ operate on the VM: boot, shutdown, etc.
 """
 
 import json
-import re
-import threading
+import itertools
 
 from perfkitbenchmarker import disk
 from perfkitbenchmarker import errors
@@ -37,111 +36,89 @@ from perfkitbenchmarker import resource
 from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker import vm_util
 from perfkitbenchmarker import windows_virtual_machine
+from perfkitbenchmarker.providers import azure
 from perfkitbenchmarker.providers.azure import azure_disk
 from perfkitbenchmarker.providers.azure import azure_network
 from perfkitbenchmarker import providers
 
 FLAGS = flags.FLAGS
 
-AZURE_PATH = 'azure'
 
-# Dict mapping OS_TYPE string to re.RegexObject. The RegexObject matches the
-# names of images for that OS type while extracting integer components of the
-# version and date from the image name in order of decreasing priority.
-_default_image_patterns = {}
-# Lock-protected dict mapping OS_TYPE string to default image name string.
-_default_images_lock = threading.Lock()
-_default_images = None
-
-
-def _GetDefaultImagesFromAzure():
-  """Gets the default images for each OS type in _default_image_patterns.
-
-  Returns:
-    dict mapping OS_TYPE string to default image name string.
-
-  Raises:
-    errors.Error: If unable to get the default image for an OS_TYPE.
-  """
-  list_images_cmd = [AZURE_PATH, 'vm', 'image', 'list', '--json']
-  stdout, _ = vm_util.IssueRetryableCommand(list_images_cmd)
-  azure_vm_image_list = json.loads(stdout)
-  images_by_os_type = {}
-  for image in azure_vm_image_list:
-    for os_type, pattern in _default_image_patterns.iteritems():
-      match = pattern.match(image['name'])
-      if match:
-        image_name_fields = tuple(None if g is None else int(g)
-                                  for g in match.groups())
-        os_images = images_by_os_type.setdefault(os_type, {})
-        os_images[image_name_fields] = match.group(0)
-  default_images = {}
-  for os_type, pattern in _default_image_patterns.iteritems():
-    os_images = images_by_os_type.get(os_type)
-    if not os_images:
-      raise errors.Error(
-          'Unable to get Azure default {0} image. No image names match '
-          '{1}'.format(os_type, pattern.pattern))
-    default_images[os_type] = os_images[max(os_images)]
-  return default_images
-
-
-def _GetDefaultImage(os_type):
-  """Gets the default image name for a given VM operating system.
-
-  Args:
-    os_type: string. VM operating system.
-
-  Returns:
-    string. Name of the image.
-  """
-  global _default_images
-  if _default_images is None:
-    with _default_images_lock:
-      if _default_images is None:
-        _default_images = _GetDefaultImagesFromAzure()
-  return _default_images[os_type]
-
-
-class AzureService(resource.BaseResource):
-  """Object representing an Azure Service."""
-
-  def __init__(self, name, affinity_group_name):
-    super(AzureService, self).__init__()
+# Per-VM resources are defined here.
+class AzurePublicIPAddress(resource.BaseResource):
+  def __init__(self, location, name):
+    super(AzurePublicIPAddress, self).__init__()
+    self.location = location
     self.name = name
-    self.affinity_group_name = affinity_group_name
+    self.resource_group = azure_network.GetResourceGroup()
 
   def _Create(self):
-    """Creates the Azure service."""
-    create_cmd = [AZURE_PATH,
-                  'service',
-                  'create',
-                  '--affinitygroup=%s' % self.affinity_group_name,
-                  self.name]
-    vm_util.IssueCommand(create_cmd)
-
-  def _Delete(self):
-    """Deletes the Azure service."""
-    delete_cmd = [AZURE_PATH,
-                  'service',
-                  'delete',
-                  '--quiet',
-                  self.name]
-    vm_util.IssueCommand(delete_cmd)
+    vm_util.IssueCommand(
+        [azure.AZURE_PATH, 'network', 'public-ip', 'create',
+         '--location', self.location,
+         self.name] + self.resource_group.args)
 
   def _Exists(self):
-    """Returns true if the service exists."""
-    show_cmd = [AZURE_PATH,
-                'service',
-                'show',
-                '--json',
-                self.name]
-    stdout, _, _ = vm_util.IssueCommand(show_cmd, suppress_warning=True)
-    try:
-      json.loads(stdout)
-    except ValueError:
-      return False
-    return True
+    stdout, _, retcode = vm_util.IssueCommand(
+        [azure.AZURE_PATH, 'network', 'public-ip', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
+
+    return retcode == 0 and stdout != '{}\n'
+
+  def GetIPAddress(self):
+    stdout, _ = vm_util.IssueRetryableCommand(
+        [azure.AZURE_PATH, 'network', 'public-ip', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
+
+    response = json.loads(stdout)
+    return response['ipAddress']
+
+  def _Delete(self):
+    pass
+
+
+class AzureNIC(resource.BaseResource):
+  def __init__(self, subnet, name):
+    super(AzureNIC, self).__init__()
+    self.subnet = subnet
+    self.name = name
+    self.resource_group = azure_network.GetResourceGroup()
+    self.location = self.subnet.vnet.location
+    self.args = ['--nic-name', self.name]
+
+  def _Create(self):
+    vm_util.IssueCommand(
+        [azure.AZURE_PATH, 'network', 'nic', 'create',
+         '--location', self.location,
+         '--subnet-vnet-name', self.subnet.vnet.name,
+         '--subnet-name', self.subnet.name,
+         self.name] + self.resource_group.args)
+
+  def _Exists(self):
+    # Same deal as AzurePublicIPAddress. 'show' doesn't error out if
+    # the resource doesn't exist, but no-op 'set' does.
+    stdout, _, retcode = vm_util.IssueCommand(
+        [azure.AZURE_PATH, 'network', 'nic', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
+
+    return retcode == 0 and stdout != '{}\n'
+
+  def GetInternalIP(self):
+    """Grab some data."""
+
+    stdout, _ = vm_util.IssueRetryableCommand(
+        [azure.AZURE_PATH, 'network', 'nic', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
+
+    response = json.loads(stdout)
+    return response['ipConfigurations'][0]['privateIPAddress']
+
+  def _Delete(self):
+    pass
 
 
 class AzureVirtualMachineMetaClass(virtual_machine.AutoRegisterVmMeta):
@@ -154,9 +131,8 @@ class AzureVirtualMachineMetaClass(virtual_machine.AutoRegisterVmMeta):
     super(AzureVirtualMachineMetaClass, cls).__init__(name, bases, dct)
     if hasattr(cls, 'OS_TYPE'):
       assert cls.OS_TYPE, '{0} did not override OS_TYPE'.format(cls.__name__)
-      assert cls.DEFAULT_IMAGE_PATTERN, (
-          '{0} did not override DEFAULT_IMAGE_PATTERN'.format(cls.__name__))
-      _default_image_patterns[cls.OS_TYPE] = cls.DEFAULT_IMAGE_PATTERN
+      assert cls.IMAGE_URN, (
+          '{0} did not override IMAGE_URN'.format(cls.__name__))
 
 
 class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
@@ -164,11 +140,11 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
 
   __metaclass__ = AzureVirtualMachineMetaClass
   CLOUD = providers.AZURE
-  # Subclasses should override the default image pattern.
-  DEFAULT_IMAGE_PATTERN = None
+  # Subclasses should override IMAGE_URN.
+  IMAGE_URN = None
 
   def __init__(self, vm_spec):
-    """Initialize a Azure virtual machine.
+    """Initialize an Azure virtual machine.
 
     Args:
       vm_spec: virtual_machine.BaseVirtualMachineSpec object of the vm.
@@ -176,78 +152,93 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
     super(AzureVirtualMachine, self).__init__(vm_spec)
     self.network = azure_network.AzureNetwork.GetNetwork(self)
     self.firewall = azure_network.AzureFirewall.GetFirewall()
-    self.service = AzureService(self.name,
-                                self.network.affinity_group.name)
-    disk_spec = disk.BaseDiskSpec('azure_os_disk')
-    self.os_disk = azure_disk.AzureDisk(disk_spec, self.name, self.machine_type)
     self.max_local_disks = 1
+    self._lun_counter = itertools.count()
+    self._deleted = False
+
+    self.resource_group = azure_network.GetResourceGroup()
+    self.public_ip = AzurePublicIPAddress(self.zone, self.name + '-public-ip')
+    self.nic = AzureNIC(self.network.subnet,
+                        self.name + '-nic')
+    self.storage_account = self.network.storage_account
+    self.image = vm_spec.image or self.IMAGE_URN
+
+    disk_spec = disk.BaseDiskSpec('azure_os_disk')
+    self.os_disk = azure_disk.AzureDisk(disk_spec,
+                                        self.name,
+                                        self.machine_type,
+                                        self.storage_account,
+                                        None,
+                                        is_image=True)
 
   def _CreateDependencies(self):
     """Create VM dependencies."""
-    self.service.Create()
-    # _GetDefaultImage may call the Azure CLI.
-    self.image = self.image or _GetDefaultImage(self.OS_TYPE)
-
-  def _DeleteDependencies(self):
-    """Delete VM dependencies."""
-    if self.os_disk.name:
-      self.os_disk.Delete()
-    self.service.Delete()
+    self.public_ip.Create()
+    self.nic.Create()
 
   def _Create(self):
-    create_cmd = [AZURE_PATH,
-                  'vm',
-                  'create',
-                  '--affinity-group=%s' % self.network.affinity_group.name,
-                  '--virtual-network-name=%s' % self.network.vnet.name,
-                  '--vm-size=%s' % self.machine_type,
-                  self.name,
-                  self.image,
-                  self.user_name]
+    create_cmd = (
+        [azure.AZURE_PATH, 'vm', 'create',
+         '--location', self.zone,
+         '--image-urn', self.image,
+         '--os-type', 'Linux',
+         '--ssh-publickey-file', self.ssh_public_key,
+         '--vm-size', self.machine_type,
+         '--public-ip-name', self.public_ip.name,
+         '--storage-account-name', self.storage_account.name,
+         '--admin-username', self.user_name,
+         '--availset-name', self.network.avail_set.name,
+         self.name] +
+        self.resource_group.args +
+        self.network.vnet.args +
+        self.network.subnet.args +
+        self.nic.args)
+
     if self.password:
-      create_cmd.append(self.password)
+      create_cmd.extend(['--admin-password', self.password])
     else:
-      create_cmd.extend(['--ssh=%d' % self.ssh_port,
-                         '--ssh-cert=%s' % vm_util.GetCertPath(),
-                         '--no-ssh-password'])
+      create_cmd.extend(['--ssh-publickey-file', self.ssh_public_key])
     vm_util.IssueCommand(create_cmd)
 
   def _Delete(self):
-    delete_cmd = [AZURE_PATH,
-                  'vm',
-                  'delete',
-                  '--quiet',
-                  self.name]
-    vm_util.IssueCommand(delete_cmd)
+    # The VM will be deleted when the resource group is.
+    self._deleted = True
 
+  @vm_util.Retry()
   def _Exists(self):
     """Returns true if the VM exists and attempts to get some data."""
-    show_cmd = [AZURE_PATH,
-                'vm',
-                'show',
-                '--json',
-                self.name]
-    stdout, _, _ = vm_util.IssueCommand(show_cmd, suppress_warning=True)
-    try:
-      json.loads(stdout)
-    except ValueError:
+    if self._deleted:
       return False
-    return True
+
+    stdout, _, _ = vm_util.IssueCommand(
+        [azure.AZURE_PATH, 'vm', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
+
+    return bool(json.loads(stdout))
 
   @vm_util.Retry()
   def _PostCreate(self):
     """Get VM data."""
-    show_cmd = [AZURE_PATH,
-                'vm',
-                'show',
-                '--json',
-                self.name]
-    stdout, _, _ = vm_util.IssueCommand(show_cmd)
+    stdout, _ = vm_util.IssueRetryableCommand(
+        [azure.AZURE_PATH, 'vm', 'show',
+         '--json',
+         self.name] + self.resource_group.args)
     response = json.loads(stdout)
-    self.os_disk.name = response['OSDisk']['name']
+    self.os_disk.name = response['storageProfile']['osDisk']['name']
     self.os_disk.created = True
-    self.internal_ip = response['IPAddress']
-    self.ip_address = response['VirtualIPAddresses'][0]['address']
+    self.internal_ip = self.nic.GetInternalIP()
+    self.ip_address = self.public_ip.GetIPAddress()
+
+  def AddMetadata(self, **tags):
+    tag_string = ';'.join(
+        ['%s=%s' % (key, value)
+         for key, value in tags.iteritems()])
+    vm_util.IssueRetryableCommand(
+        [azure.AZURE_PATH, 'vm', 'set',
+         self.name,
+         '--tags', tag_string] +
+        self.resource_group.args)
 
   def CreateScratchDisk(self, disk_spec):
     """Create a VM's scratch disk.
@@ -258,61 +249,40 @@ class AzureVirtualMachine(virtual_machine.BaseVirtualMachine):
     disks = []
 
     for _ in xrange(disk_spec.num_striped_disks):
-      data_disk = azure_disk.AzureDisk(disk_spec, self.name, self.machine_type)
       if disk_spec.disk_type == disk.LOCAL:
         # Local disk numbers start at 1 (0 is the system disk).
-        data_disk.disk_number = self.local_disk_counter + 1
+        disk_number = self.local_disk_counter + 1
         self.local_disk_counter += 1
+        lun = None
         if self.local_disk_counter > self.max_local_disks:
           raise errors.Error('Not enough local disks.')
       else:
         # Remote disk numbers start at 1 + max_local disks (0 is the system disk
         # and local disks occupy [1, max_local_disks]).
-        data_disk.disk_number = (self.remote_disk_counter +
-                                 1 + self.max_local_disks)
+        disk_number = self.remote_disk_counter + 1 + self.max_local_disks
         self.remote_disk_counter += 1
+        lun = next(self._lun_counter)
+      data_disk = azure_disk.AzureDisk(disk_spec, self.name, self.machine_type,
+                                       self.storage_account, lun)
+      data_disk.disk_number = disk_number
       disks.append(data_disk)
 
     self._CreateScratchDiskFromDisks(disk_spec, disks)
 
-  def GetLocalDisks(self):
-    """Returns a list of local disks on the VM.
-
-    Returns:
-      A list of strings, where each string is the absolute path to the local
-          disks on the VM (e.g. '/dev/sdb').
-    """
-    return ['/dev/sdb']
-
 
 class DebianBasedAzureVirtualMachine(AzureVirtualMachine,
                                      linux_virtual_machine.DebianMixin):
-
-  # Example: ('b39f27a8b8c64d52b05eac6a62ebad85__Ubuntu-'
-  #           '14_04_3-LTS-amd64-server-20150908-en-us-30GB')
-  DEFAULT_IMAGE_PATTERN = re.compile(
-      r'b39f27a8b8c64d52b05eac6a62ebad85__Ubuntu-14_04'
-      r'(?:_([0-9]+))?-LTS-amd64-server-([0-9]+)(?:[.]([0-9]+))?-en-us-30GB')
+  IMAGE_URN = 'Canonical:UbuntuServer:14.04.4-LTS:latest'
 
 
 class RhelBasedAzureVirtualMachine(AzureVirtualMachine,
                                    linux_virtual_machine.RhelMixin):
-
-  # Example: ('0b11de9248dd4d87b18621318e037d37__RightImage-'
-  #           'CentOS-7.0-x64-v14.2.1')
-  DEFAULT_IMAGE_PATTERN = re.compile(
-      r'0b11de9248dd4d87b18621318e037d37__RightImage-CentOS-7[.]([0-9]+)-x64-'
-      r'v([0-9]+)(?:[.]([0-9]+))?(?:[.]([0-9]+))?(?:[.]([0-9]+))?')
+  IMAGE_URN = 'RedHat:RHEL:7.2:latest'
 
 
 class WindowsAzureVirtualMachine(AzureVirtualMachine,
                                  windows_virtual_machine.WindowsMixin):
-
-  # Example: ('a699494373c04fc0bc8f2bb1389d6106__Windows-Server'
-  #           '-2012-R2-201505.01-en.us-127GB.vhd')
-  DEFAULT_IMAGE_PATTERN = re.compile(
-      r'a699494373c04fc0bc8f2bb1389d6106__Windows-Server'
-      r'-2012-R2-([0-9]+)(?:[.]([0-9]+))?-en.us-127GB.vhd')
+  IMAGE_URN = 'MicrosoftWindowsServer:WindowsServer:2012-R2-Datacenter:latest'
 
   def __init__(self, vm_spec):
     super(WindowsAzureVirtualMachine, self).__init__(vm_spec)
@@ -323,13 +293,10 @@ class WindowsAzureVirtualMachine(AzureVirtualMachine,
     super(WindowsAzureVirtualMachine, self)._PostCreate()
     config_dict = {'commandToExecute': windows_virtual_machine.STARTUP_SCRIPT}
     config = json.dumps(config_dict)
-    set_extension_command = [AZURE_PATH,
-                             'vm',
-                             'extension',
-                             'set',
-                             self.name,
-                             'CustomScriptExtension',
-                             'Microsoft.Compute',
-                             '1.4',
-                             '--public-config=%s' % config]
-    vm_util.IssueRetryableCommand(set_extension_command)
+    vm_util.IssueRetryableCommand(
+        [azure.AZURE_PATH, 'vm', 'extension', 'set',
+         '--vm-name', self.name,
+         'CustomScriptExtension',
+         'Microsoft.Compute',
+         '1.4',
+         '--public-config=%s' % config] + self.resource_group.args)

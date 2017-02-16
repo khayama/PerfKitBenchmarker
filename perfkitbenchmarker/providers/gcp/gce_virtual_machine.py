@@ -31,7 +31,6 @@ import yaml
 
 from perfkitbenchmarker import disk
 from perfkitbenchmarker import errors
-from perfkitbenchmarker import events
 from perfkitbenchmarker import flags
 from perfkitbenchmarker import flag_util
 from perfkitbenchmarker import linux_virtual_machine as linux_vm
@@ -173,6 +172,8 @@ class GceVmSpec(virtual_machine.BaseVmSpec):
     num_local_ssds: int. The number of local SSDs to attach to the instance.
     preemptible: boolean. True if the VM should be preemptible, False otherwise.
     project: string or None. The project to create the VM in.
+    boot_disk_size: None or int. The size of the boot disk in GB.
+    boot_disk_type: string or None. The tyoe of the boot disk.
   """
 
   CLOUD = providers.GCP
@@ -204,6 +205,10 @@ class GceVmSpec(virtual_machine.BaseVmSpec):
       config_values['num_local_ssds'] = flag_values.gce_num_local_ssds
     if flag_values['gce_preemptible_vms'].present:
       config_values['preemptible'] = flag_values.gce_preemptible_vms
+    if flag_values['gce_boot_disk_size'].present:
+      config_values['boot_disk_size'] = flag_values.gce_boot_disk_size
+    if flag_values['gce_boot_disk_type'].present:
+      config_values['boot_disk_type'] = flag_values.gce_boot_disk_type
     if flag_values['machine_type'].present:
       config_values['machine_type'] = yaml.load(flag_values.machine_type)
     if flag_values['project'].present:
@@ -224,6 +229,8 @@ class GceVmSpec(virtual_machine.BaseVmSpec):
         'num_local_ssds': (option_decoders.IntDecoder, {'default': 0,
                                                         'min': 0}),
         'preemptible': (option_decoders.BooleanDecoder, {'default': False}),
+        'boot_disk_size': (option_decoders.IntDecoder, {'default': None}),
+        'boot_disk_type': (option_decoders.StringDecoder, {'default': None}),
         'project': (option_decoders.StringDecoder, {'default': None})})
     return result
 
@@ -256,10 +263,11 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
     self.max_local_disks = vm_spec.num_local_ssds
     self.memory_mib = vm_spec.memory
     self.preemptible = vm_spec.preemptible
-    self.project = vm_spec.project
+    self.project = vm_spec.project or util.GetDefaultProject()
     self.network = gce_network.GceNetwork.GetNetwork(self)
     self.firewall = gce_network.GceFirewall.GetFirewall()
-    events.sample_created.connect(self.AnnotateSample, weak=False)
+    self.boot_disk_size = vm_spec.boot_disk_size
+    self.boot_disk_type = vm_spec.boot_disk_type
 
   def _GenerateCreateCommand(self, ssh_keys_path):
     """Generates a command to create the VM instance.
@@ -271,13 +279,16 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
       GcloudCommand. gcloud command to issue in order to create the VM instance.
     """
     cmd = util.GcloudCommand(self, 'compute', 'instances', 'create', self.name)
-    cmd.flags['network'] = self.network.network_resource.name
+    if self.network.subnet_resource is not None:
+      cmd.flags['subnet'] = self.network.subnet_resource.name
+    else:
+      cmd.flags['network'] = self.network.network_resource.name
     cmd.flags['image'] = self.image
     cmd.flags['boot-disk-auto-delete'] = True
     if FLAGS.image_project:
       cmd.flags['image-project'] = FLAGS.image_project
-    cmd.flags['boot-disk-size'] = self.BOOT_DISK_SIZE_GB
-    cmd.flags['boot-disk-type'] = self.BOOT_DISK_TYPE
+    cmd.flags['boot-disk-size'] = self.boot_disk_size or self.BOOT_DISK_SIZE_GB
+    cmd.flags['boot-disk-type'] = self.boot_disk_type or self.BOOT_DISK_TYPE
     if self.machine_type is None:
       cmd.flags['custom-cpu'] = self.cpus
       cmd.flags['custom-memory'] = '{0}MiB'.format(self.memory_mib)
@@ -397,16 +408,6 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
 
     self._CreateScratchDiskFromDisks(disk_spec, disks)
 
-  def GetLocalDisks(self):
-    """Returns a list of local disks on the VM.
-
-    Returns:
-      A list of strings, where each string is the absolute path to the local
-          disks on the VM (e.g. '/dev/sdb').
-    """
-    return ['/dev/disk/by-id/google-local-ssd-%d' % i
-            for i in range(self.max_local_disks)]
-
   def AddMetadata(self, **kwargs):
     """Adds metadata to the VM via 'gcloud compute instances add-metadata'."""
     if not kwargs:
@@ -417,9 +418,6 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
                                      for key, value in kwargs.iteritems())
     cmd.Issue()
 
-  def AnnotateSample(self, unused_sender, benchmark_spec, sample):
-    sample['metadata']['preemptible'] = self.preemptible
-
   def GetMachineTypeDict(self):
     """Returns a dict containing properties that specify the machine type.
 
@@ -427,7 +425,7 @@ class GceVirtualMachine(virtual_machine.BaseVirtualMachine):
       dict mapping string property key to value.
     """
     result = super(GceVirtualMachine, self).GetMachineTypeDict()
-    for attr_name in 'cpus', 'memory_mib', 'preemptible':
+    for attr_name in 'cpus', 'memory_mib', 'preemptible', 'project':
       attr_value = getattr(self, attr_name)
       if attr_value:
         result[attr_name] = attr_value

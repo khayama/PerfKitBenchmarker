@@ -20,7 +20,23 @@ oltp benchmarks depending on older version of sysbench will break if we
 install 0.5 or later for them. Therefore, it's necessary that we have a
 separate installer here for 0.5 and later.
 """
-from perfkitbenchmarker import vm_util
+from perfkitbenchmarker import os_types
+from perfkitbenchmarker.linux_packages import INSTALL_DIR
+
+
+def PathPrefix(vm):
+  """Determines the prefix for a sysbench command based on the operating system.
+
+  Args:
+    vm: VM  on which the sysbench command will be executed.
+
+  Returns:
+    A string representing the sysbench command prefix.
+  """
+  if vm.OS_TYPE == os_types.RHEL:
+    return INSTALL_DIR
+  else:
+    return '/usr/'
 
 
 def YumInstall(vm):
@@ -31,14 +47,14 @@ def YumInstall(vm):
   vm.RemoteCommand('cd ~ && bzr branch lp:sysbench')
   vm.RemoteCommand(('cd ~/sysbench && ./autogen.sh &&'
                     ' ./configure --prefix=%s --mandir=%s/share/man &&'
-                    ' make') % (vm_util.VM_TMP_DIR, vm_util.VM_TMP_DIR))
+                    ' make') % (INSTALL_DIR, INSTALL_DIR))
   vm.RemoteCommand('cd ~/sysbench && sudo make install')
   vm.RemoteCommand('sudo mkdir %s/share/doc/sysbench/tests/db -p' %
-                   vm_util.VM_TMP_DIR)
+                   INSTALL_DIR)
   vm.RemoteCommand('sudo cp ~/sysbench/sysbench/tests/db/*'
-                   ' %s/share/doc/sysbench/tests/db/' % vm_util.VM_TMP_DIR)
+                   ' %s/share/doc/sysbench/tests/db/' % INSTALL_DIR)
   vm.RemoteCommand('echo "export PATH=$PATH:%s/bin" >> ~/.bashrc && '
-                   'source ~/.bashrc' % vm_util.VM_TMP_DIR)
+                   'source ~/.bashrc' % INSTALL_DIR)
 
   # Cleanup the source code enlisthment from bzr, we don't need it anymore.
   vm.RemoteCommand('cd ~ && rm -fr ./sysbench')
@@ -46,18 +62,17 @@ def YumInstall(vm):
 
 def AptInstall(vm):
   """ Installs the sysbench 0.5 or later versions via APT Install """
-
-  # Setup the proper sources list so apt get will get the latest version
-  # of sysbench. By default, it only gets version earlier than 0.5.
-  vm.RemoteCommand('sudo bash -c \'echo "deb http://repo.percona.com/apt'
-                   ' trusty main">>/etc/apt/sources.list.d/percona.list\'')
-  vm.RemoteCommand('sudo bash -c \'echo "deb-src http://repo.percona.com/apt'
-                   ' trusty main">>/etc/apt/sources.list.d/percona.list\'')
-  vm.RemoteCommand('sudo bash -c \'echo "deb http://security.ubuntu.com/ubuntu'
-                   ' trusty-security main">>/etc/apt/sources.list\'')
-  vm.RemoteCommand('sudo apt-key adv --keyserver keys.gnupg.net --recv-keys'
-                   ' 1C4CBDCDCD2EFD2A')
+  vm.Install('wget')
+  vm.RemoteCommand('wget https://repo.percona.com/apt/'
+                   'percona-release_0.1-4.$(lsb_release -sc)_all.deb')
+  vm.RemoteCommand(
+      'sudo dpkg -i percona-release_0.1-4.$(lsb_release -sc)_all.deb')
   vm.RemoteCommand('sudo apt-get update')
   vm.InstallPackages('libc6')
   vm.InstallPackages('mysql-client')
   vm.InstallPackages('sysbench')
+
+
+def AptUninstall(vm):
+  vm.RemoteCommand('sudo dpkg --purge percona-release')
+  vm.RemoteCommand('sudo apt-get update')

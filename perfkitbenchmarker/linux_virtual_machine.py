@@ -49,7 +49,7 @@ FLAGS = flags.FLAGS
 EPEL6_RPM = ('http://dl.fedoraproject.org/pub/epel/'
              '6/x86_64/epel-release-6-8.noarch.rpm')
 EPEL7_RPM = ('http://dl.fedoraproject.org/pub/epel/'
-             '7/x86_64/e/epel-release-7-5.noarch.rpm')
+             '7/x86_64/e/epel-release-7-8.noarch.rpm')
 
 UPDATE_RETRIES = 5
 SSH_RETRIES = 10
@@ -72,6 +72,23 @@ WAIT_FOR_COMMAND = 'wait_for_command.py'
 flags.DEFINE_bool('setup_remote_firewall', False,
                   'Whether PKB should configure the firewall of each remote'
                   'VM to make sure it accepts all internal connections.')
+
+flags.DEFINE_list('sysctl', [],
+                  'Sysctl values to set. This flag should be a comma-separated '
+                  'list of path=value pairs. Each value will be written to the '
+                  'corresponding path. For example, if you pass '
+                  '--sysctls=vm.dirty_background_ratio=10,vm.dirty_ratio=25, '
+                  'PKB will run "sysctl vm.dirty_background_ratio=10 '
+                  'vm.dirty_ratio=25" before starting the benchmark.')
+
+flags.DEFINE_list('set_files', [],
+                  'Arbitrary filesystem configuration. This flag should be a '
+                  'comma-separated list of path=value pairs. Each value will '
+                  'be written to the corresponding path. For example, if you '
+                  'pass --set_files=/sys/kernel/mm/transparent_hugepage/enabled=always, '  # noqa
+                  'then PKB will write "always" to '
+                  '/sys/kernel/mm/transparent_hugepage/enabled before starting '
+                  'the benchmark.')
 
 
 class BaseLinuxMixin(virtual_machine.BaseOsMixin):
@@ -195,10 +212,28 @@ class BaseLinuxMixin(virtual_machine.BaseOsMixin):
     if FLAGS.setup_remote_firewall:
       self.SetupRemoteFirewall()
     if self.install_packages:
+      self.RemoteCommand('sudo mkdir -p %s' % linux_packages.INSTALL_DIR)
+      self.RemoteCommand('sudo chmod a+rwxt %s' % linux_packages.INSTALL_DIR)
       if self.is_static:
         self.SnapshotPackages()
       self.SetupPackageManager()
+    self.SetFiles()
+    self.DoSysctls()
     self.BurnCpu()
+
+  def SetFiles(self):
+    """Apply --set_files to the VM."""
+
+    for pair in FLAGS.set_files:
+      path, value = pair.split('=')
+      self.RemoteCommand('echo "%s" | sudo tee %s' %
+                         (value, path))
+
+  def DoSysctls(self):
+    """Apply --sysctl to the VM."""
+
+    if FLAGS.sysctl:
+      self.RemoteCommand('sudo sysctl -w %s' % (' '.join(FLAGS.sysctl),))
 
   @vm_util.Retry(log_errors=False, poll_interval=1)
   def WaitForBootCompletion(self):
@@ -227,7 +262,7 @@ class BaseLinuxMixin(virtual_machine.BaseOsMixin):
     for package_name in self._installed_packages:
       self.Uninstall(package_name)
     self.RestorePackages()
-    self.RemoteCommand('rm -rf %s' % vm_util.VM_TMP_DIR)
+    self.RemoteCommand('sudo rm -rf %s' % linux_packages.INSTALL_DIR)
 
   def GetPathToConfig(self, package_name):
     """Returns the path to the config file for PerfKit packages.
@@ -417,9 +452,7 @@ class BaseLinuxMixin(virtual_machine.BaseOsMixin):
     Raises:
       AuthError: If the VM cannot access its peer.
     """
-    try:
-      self.RemoteCommand('ssh %s hostname' % peer.internal_ip)
-    except errors.VirtualMachine.RemoteCommandError:
+    if not self.TryRemoteCommand('ssh %s hostname' % peer.internal_ip):
       raise errors.VirtualMachine.AuthError(
           'Authentication check failed. If you are running with Static VMs, '
           'please make sure that %s can ssh into %s without supplying any '
@@ -484,11 +517,7 @@ class BaseLinuxMixin(virtual_machine.BaseOsMixin):
 
   def _TestReachable(self, ip):
     """Returns True if the VM can reach the ip address and False otherwise."""
-    try:
-      self.RemoteCommand('ping -c 1 %s' % ip)
-    except errors.VirtualMachine.RemoteCommandError:
-      return False
-    return True
+    return self.TryRemoteCommand('ping -c 1 %s' % ip)
 
   def SetupLocalDisks(self):
     """Performs Linux specific setup of local disks."""
@@ -562,6 +591,17 @@ class BaseLinuxMixin(virtual_machine.BaseOsMixin):
         time.sleep(end_time - time.time())
       self.RemoteCommand('pkill -9 sysbench')
 
+  def SetReadAhead(self, num_sectors, devices):
+    """Set read-ahead value for block devices.
+
+    Args:
+      num_sectors: int. Number of sectors of read ahead.
+      devices: list of strings. A list of block devices.
+    """
+    self.RemoteCommand(
+        'sudo blockdev --setra {0} {1}; sudo blockdev --setfra {0} {1};'.format(
+            num_sectors, ' '.join(devices)))
+
 
 class RhelMixin(BaseLinuxMixin):
   """Class holding RHEL specific VM methods and attributes."""
@@ -589,6 +629,8 @@ class RhelMixin(BaseLinuxMixin):
       else:
         raise e
       self.RemoteCommand('sudo rpm -ivh --force %s' % epel_rpm)
+    self.InstallPackages('yum-utils')
+    self.RemoteCommand('sudo yum-config-manager --enable epel')
 
   def PackageCleanup(self):
     """Cleans up all installed packages.
@@ -601,15 +643,21 @@ class RhelMixin(BaseLinuxMixin):
 
   def SnapshotPackages(self):
     """Grabs a snapshot of the currently installed packages."""
-    self.RemoteCommand('rpm -qa > %s/rpm_package_list' % vm_util.VM_TMP_DIR)
+    self.RemoteCommand('rpm -qa > %s/rpm_package_list'
+                       % linux_packages.INSTALL_DIR)
 
   def RestorePackages(self):
     """Restores the currently installed packages to those snapshotted."""
     self.RemoteCommand(
         'rpm -qa | grep --fixed-strings --line-regexp --invert-match --file '
         '%s/rpm_package_list | xargs --no-run-if-empty sudo rpm -e' %
-        vm_util.VM_TMP_DIR,
+        linux_packages.INSTALL_DIR,
         ignore_failure=True)
+
+  def HasPackage(self, package):
+    """Returns True iff the package is available for installation."""
+    return self.TryRemoteCommand('sudo yum info %s' % package,
+                                 suppress_warning=True)
 
   def InstallPackages(self, packages):
     """Installs packages using the yum package manager."""
@@ -703,15 +751,22 @@ class DebianMixin(BaseLinuxMixin):
   def SnapshotPackages(self):
     """Grabs a snapshot of the currently installed packages."""
     self.RemoteCommand(
-        'dpkg --get-selections > %s/dpkg_selections' % vm_util.VM_TMP_DIR)
+        'dpkg --get-selections > %s/dpkg_selections'
+        % linux_packages.INSTALL_DIR)
 
   def RestorePackages(self):
     """Restores the currently installed packages to those snapshotted."""
     self.RemoteCommand('sudo dpkg --clear-selections')
     self.RemoteCommand(
-        'sudo dpkg --set-selections < %s/dpkg_selections' % vm_util.VM_TMP_DIR)
+        'sudo dpkg --set-selections < %s/dpkg_selections'
+        % linux_packages.INSTALL_DIR)
     self.RemoteCommand('sudo DEBIAN_FRONTEND=\'noninteractive\' '
                        'apt-get --purge -y dselect-upgrade')
+
+  def HasPackage(self, package):
+    """Returns True iff the package is available for installation."""
+    return self.TryRemoteCommand('apt-get install --just-print %s' % package,
+                                 suppress_warning=True)
 
   @vm_util.Retry()
   def InstallPackages(self, packages):
@@ -817,6 +872,7 @@ class ContainerizedDebianMixin(DebianMixin):
   """
 
   OS_TYPE = os_types.UBUNTU_CONTAINER
+  BASE_DOCKER_IMAGE = 'ubuntu:trusty-20161006'
 
   def _CheckDockerExists(self):
     """Returns whether docker is installed or not."""
@@ -839,7 +895,6 @@ class ContainerizedDebianMixin(DebianMixin):
 
   def InitDocker(self):
     """Initializes the docker container daemon."""
-    self.CONTAINER_IMAGE = 'ubuntu:latest'
     init_docker_cmd = ['sudo docker run -d '
                        '--net=host '
                        '--workdir=%s '
@@ -848,7 +903,7 @@ class ContainerizedDebianMixin(DebianMixin):
                                       CONTAINER_MOUNT_DIR)]
     for sd in self.scratch_disks:
       init_docker_cmd.append('-v %s:%s ' % (sd.mount_point, sd.mount_point))
-    init_docker_cmd.append('%s sleep infinity ' % self.CONTAINER_IMAGE)
+    init_docker_cmd.append('%s sleep infinity ' % self.BASE_DOCKER_IMAGE)
     init_docker_cmd = ''.join(init_docker_cmd)
 
     resp, _ = self.RemoteHostCommand(init_docker_cmd)

@@ -86,7 +86,7 @@ def GetConfig(user_config):
     return config
 
 
-def CheckPrerequisites():
+def CheckPrerequisites(benchmark_config):
     # Before YCSB Cloud Datastore supports Application Default Credential,
     # we should always make sure valid credential flags are set.
     if not FLAGS.jdbc_ycsb_db_driver:
@@ -111,6 +111,7 @@ def Prepare(benchmark_spec):
     # Create benchmark table.
     ExecuteSql(vms[0], DROP_TABLE_SQL)
     ExecuteSql(vms[0], CREATE_TABLE_SQL)
+    benchmark_spec.executor = ycsb.YCSBExecutor('jdbc')
 
 
 def ExecuteSql(vm, sql):
@@ -134,7 +135,7 @@ def ExecuteSql(vm, sql):
 
 def Run(benchmark_spec):
     vms = benchmark_spec.vms
-    executor = ycsb.YCSBExecutor('jdbc')
+
     run_kwargs = {
         'db.driver': FLAGS.jdbc_ycsb_db_driver,
         'db.url': '"%s"' % FLAGS.jdbc_ycsb_db_url,
@@ -146,9 +147,8 @@ def Run(benchmark_spec):
     load_kwargs = run_kwargs.copy()
     if FLAGS['ycsb_preload_threads'].present:
         load_kwargs['threads'] = FLAGS['ycsb_preload_threads']
-    samples = list(executor.LoadAndRun(vms,
-                                       load_kwargs=load_kwargs,
-                                       run_kwargs=run_kwargs))
+    samples = list(benchmark_spec.executor.LoadAndRun(
+        vms, load_kwargs=load_kwargs, run_kwargs=run_kwargs))
     return samples
 
 

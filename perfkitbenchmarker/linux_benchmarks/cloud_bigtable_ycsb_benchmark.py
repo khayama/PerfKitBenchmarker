@@ -28,7 +28,6 @@ import logging
 import os
 import pipes
 import posixpath
-import re
 import subprocess
 
 from perfkitbenchmarker import configs
@@ -43,8 +42,7 @@ from perfkitbenchmarker.providers.gcp import gcp_bigtable
 
 FLAGS = flags.FLAGS
 
-HBASE_VERSION = re.match(r'(\d+\.\d+)\.?\d*', hbase.HBASE_VERSION).group(1)
-
+HBASE_CLIENT_VERSION = '1.1'
 BIGTABLE_CLIENT_VERSION = '0.9.0'
 
 flags.DEFINE_string('google_bigtable_endpoint', 'bigtable.googleapis.com',
@@ -62,7 +60,7 @@ flags.DEFINE_string(
     'https://oss.sonatype.org/service/local/repositories/releases/content/'
     'com/google/cloud/bigtable/bigtable-hbase-{0}/'
     '{1}/bigtable-hbase-{0}-{1}.jar'.format(
-        HBASE_VERSION,
+        HBASE_CLIENT_VERSION,
         BIGTABLE_CLIENT_VERSION),
     'URL for the Bigtable-HBase client JAR.')
 
@@ -107,7 +105,7 @@ def GetConfig(user_config):
   return configs.LoadConfig(BENCHMARK_CONFIG, user_config, BENCHMARK_NAME)
 
 
-def CheckPrerequisites():
+def CheckPrerequisites(benchmark_config):
   """Verifies that the required resources are present.
 
   Raises:
@@ -207,7 +205,7 @@ def _Install(vm):
       'google_bigtable_admin_endpoint': FLAGS.google_bigtable_admin_endpoint,
       'project': FLAGS.project or _GetDefaultProject(),
       'instance': instance_name,
-      'hbase_version': HBASE_VERSION.replace('.', '_')
+      'hbase_version': HBASE_CLIENT_VERSION.replace('.', '_')
   }
 
   for file_name in HBASE_CONF_FILES:
@@ -251,6 +249,19 @@ def Prepare(benchmark_spec):
   hbase_ycsb.CreateYCSBTable(vms[0], table_name=_GetTableName(),
                              use_snappy=False, limit_filesize=False)
 
+  table_name = _GetTableName()
+
+  # Add hbase conf dir to the classpath.
+  ycsb_memory = min(vms[0].total_memory_kb // 1024, 4096)
+  jvm_args = pipes.quote(' -Xmx{0}m'.format(ycsb_memory))
+
+  executor_flags = {
+      'cp': hbase.HBASE_CONF_DIR,
+      'jvm-args': jvm_args,
+      'table': table_name}
+
+  benchmark_spec.executor = ycsb.YCSBExecutor('hbase10', **executor_flags)
+
 
 def Run(benchmark_spec):
   """Spawn YCSB and gather the results.
@@ -264,17 +275,6 @@ def Run(benchmark_spec):
   """
   vms = benchmark_spec.vms
 
-  table_name = _GetTableName()
-
-  # Add hbase conf dir to the classpath.
-  ycsb_memory = ycsb_memory = min(vms[0].total_memory_kb // 1024, 4096)
-  jvm_args = pipes.quote(' -Xmx{0}m'.format(ycsb_memory))
-
-  executor_flags = {'cp': hbase.HBASE_CONF_DIR,
-                    'jvm-args': jvm_args,
-                    'table': table_name}
-
-  executor = ycsb.YCSBExecutor('hbase10', **executor_flags)
   instance_name = (FLAGS.google_bigtable_instance_name or
                    'pkb-bigtable-{0}'.format(FLAGS.run_uri))
   instance_info = _GetInstanceDescription(
@@ -297,9 +297,8 @@ def Run(benchmark_spec):
   load_kwargs['clientbuffering'] = 'true'
   if not FLAGS['ycsb_preload_threads'].present:
     load_kwargs['threads'] = 1
-  samples = list(executor.LoadAndRun(vms,
-                                     load_kwargs=load_kwargs,
-                                     run_kwargs=run_kwargs))
+  samples = list(benchmark_spec.executor.LoadAndRun(
+      vms, load_kwargs=load_kwargs, run_kwargs=run_kwargs))
   for sample in samples:
     sample.metadata.update(metadata)
 

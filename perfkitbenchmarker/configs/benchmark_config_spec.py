@@ -22,6 +22,7 @@ import copy
 import os
 
 from perfkitbenchmarker import disk
+from perfkitbenchmarker import dpb_service
 from perfkitbenchmarker import errors
 from perfkitbenchmarker import flag_util
 from perfkitbenchmarker import flags
@@ -32,18 +33,18 @@ from perfkitbenchmarker import spark_service
 from perfkitbenchmarker import virtual_machine
 from perfkitbenchmarker.configs import option_decoders
 from perfkitbenchmarker.configs import spec
-
+from perfkitbenchmarker.dpb_service import BaseDpbService
 
 _DEFAULT_DISK_COUNT = 1
 _DEFAULT_VM_COUNT = 1
 
 
-class _FlagsDecoder(option_decoders.TypeVerifier):
+class FlagsDecoder(option_decoders.TypeVerifier):
   """Processes the flags override dictionary of a benchmark config object."""
 
   def __init__(self, **kwargs):
-    super(_FlagsDecoder, self).__init__(default=None, none_ok=True,
-                                        valid_types=(dict,), **kwargs)
+    super(FlagsDecoder, self).__init__(default=None, none_ok=True,
+                                       valid_types=(dict,), **kwargs)
 
   def Decode(self, value, component_full_name, flag_values):
     """Processes the flags override dictionary of a benchmark config object.
@@ -58,8 +59,8 @@ class _FlagsDecoder(option_decoders.TypeVerifier):
       dict mapping flag name string to Flag object. The flag values to use
       when running the benchmark.
     """
-    config_flags = super(_FlagsDecoder, self).Decode(value, component_full_name,
-                                                     flag_values)
+    config_flags = super(FlagsDecoder, self).Decode(value, component_full_name,
+                                                    flag_values)
     merged_flag_values = copy.deepcopy(flag_values)
     if config_flags:
       for key, value in config_flags.iteritems():
@@ -76,7 +77,130 @@ class _FlagsDecoder(option_decoders.TypeVerifier):
                 'Invalid {0}.{1} value: "{2}" (of type "{3}").{4}{5}'.format(
                     self._GetOptionFullName(component_full_name), key, value,
                     value.__class__.__name__, os.linesep, e))
-    return merged_flag_values.FlagDict()
+    if hasattr(merged_flag_values, '_flags'):
+      return merged_flag_values._flags()  # pylint: disable=protected-access
+    else:
+      return merged_flag_values.FlagDict()
+
+
+class _DpbApplicationListDecoder(option_decoders.ListDecoder):
+    """Decodes the list of applications to be enabled on the dpb service."""
+
+    def __init__(self, **kwargs):
+        super(_DpbApplicationListDecoder, self).__init__(
+            default=None,
+            item_decoder=option_decoders.EnumDecoder([dpb_service.FLINK,
+                                                      dpb_service.HIVE]),
+            **kwargs)
+
+
+class _DpbServiceDecoder(option_decoders.TypeVerifier):
+  """Validates the dpb(data processing backend) service dictionary of a
+  benchmark config object."""
+
+  def __init__(self, **kwargs):
+      super(_DpbServiceDecoder, self).__init__(valid_types=(dict,), **kwargs)
+
+  def Decode(self, value, component_full_name, flag_values):
+    """Verifies dpb(data processing backend) service dictionary of a
+    benchmark config object.
+
+    Args:
+      value: dict Dpb Service config dictionary
+      component_full_name: string.  Fully qualified name of the configurable
+      component containing the config option.
+      flag_values: flags.FlagValues.  Runtime flag values to be propagated
+      to BaseSpec constructors.
+    Returns:
+      _DpbServiceSpec Build from the config passed in in value.
+    Raises:
+      errors.Config.InvalidValue upon invalid input value.
+    """
+    dpb_service_config = super(_DpbServiceDecoder, self).Decode(
+        value, component_full_name, flag_values)
+    if dpb_service_config['service_type'] == dpb_service.EMR:
+        if flag_values.dpb_wordcount_fs != BaseDpbService.S3_FS:
+            raise errors.Config.InvalidValue('EMR service requires S3.')
+    if dpb_service_config['service_type'] == dpb_service.DATAFLOW:
+      if flag_values.dpb_dataflow_jar is None:
+        raise errors.Config.InvalidValue('Dataflow jar missing.')
+      if flag_values.dpb_dataflow_staging_location is None:
+        raise errors.Config.InvalidValue('Dataflow Staging location missing.')
+    result = _DpbServiceSpec(self._GetOptionFullName(component_full_name),
+                             flag_values, **dpb_service_config)
+    return result
+
+
+class _DpbServiceSpec(spec.BaseSpec):
+    """Configurable options of an Distributed Processing Backend Service.
+
+    We may add more options here, such as disk specs, as necessary.
+    When there are flags for these attributes, the convention is that
+    the flag is prefixed with dpb.
+
+    Attributes:
+      service_type: string.  pkb_managed or dataflow,dataproc,emr, etc.
+      static_dpb_service_instance: if user has pre created a container, the id
+      worker_group: Vm group spec for workers.
+      worker_count: the number of workers part of the dpb service
+      applications: An enumerated list of applications that need
+        to be enabled on the dpb service
+    """
+
+    def __init__(self, component_full_name, flag_values=None, **kwargs):
+        super(_DpbServiceSpec, self).__init__(component_full_name,
+                                              flag_values=flag_values,
+                                              **kwargs)
+
+    @classmethod
+    def _GetOptionDecoderConstructions(cls):
+        """Gets decoder classes and constructor args for each configurable option.
+
+        Returns:
+          dict. Maps option name string to a (ConfigOptionDecoder class, dict)
+           pair. The pair specifies a decoder class and its __init__() keyword
+           arguments to construct in order to decode the named option.
+        """
+        result = super(_DpbServiceSpec, cls)._GetOptionDecoderConstructions()
+        result.update({
+            'static_dpb_service_instance': (option_decoders.StringDecoder,
+                                            {'default': None, 'none_ok': True}),
+            'service_type': (option_decoders.EnumDecoder, {
+                'default': dpb_service.DATAPROC,
+                'valid_values': [dpb_service.DATAPROC,
+                                 dpb_service.DATAFLOW,
+                                 dpb_service.EMR]}),
+            'worker_group': (_VmGroupSpecDecoder, {}),
+            'worker_count': (option_decoders.IntDecoder,
+                             {'default': dpb_service.DEFAULT_WORKER_COUNT,
+                              'min': 2}),
+            'applications': (_DpbApplicationListDecoder, {})
+        })
+        return result
+
+    @classmethod
+    def _ApplyFlags(cls, config_values, flag_values):
+        """Modifies config options based on runtime flag values.
+
+        Can be overridden by derived classes to add support for specific flags.
+
+        Args:
+          config_values: dict mapping config option names to provided values.
+            May be modified by this function.
+          flag_values: flags.FlagValues. Runtime flags that may override the
+              provided config values.
+        """
+        super(_DpbServiceSpec, cls)._ApplyFlags(config_values, flag_values)
+        if flag_values['static_dpb_service_instance'].present:
+            config_values['static_dpb_service_instance'] = (
+                flag_values.static_dpb_service_instance)
+        # TODO(saksena): Update the documentation for zones assignment
+        if flag_values['zones'].present:
+            for group in ('worker_group'):
+                if group in config_values:
+                    for cloud in config_values[group]['vm_spec']:
+                        config_values[group]['vm_spec'][cloud]['zone'] = (
+                            flag_values.zones[0])
 
 
 class _PerCloudConfigSpec(spec.BaseSpec):
@@ -153,7 +277,8 @@ class _StaticVmDecoder(option_decoders.TypeVerifier):
     input_dict = super(_StaticVmDecoder, self).Decode(
         value, component_full_name, flag_values)
     return static_virtual_machine.StaticVmSpec(
-        self._GetOptionFullName(component_full_name), **input_dict)
+        self._GetOptionFullName(component_full_name), flag_values=flag_values,
+        **input_dict)
 
 
 class _StaticVmListDecoder(option_decoders.ListDecoder):
@@ -176,10 +301,8 @@ class _SparkServiceSpec(spec.BaseSpec):
     service_type: string.  pkb_managed or managed_service
     static_cluster_id: if user has created a cluster, the id of the
       cluster.
-    num_workers: number of workers.
-    machine_type: machine type to use.
-    cloud: cloud to use.
-    project: project to use.
+    worker_group: Vm group spec for workers.
+    master_group: Vm group spec for master
   """
 
   def __init__(self, component_full_name, flag_values=None, **kwargs):
@@ -204,16 +327,10 @@ class _SparkServiceSpec(spec.BaseSpec):
             'default': spark_service.PROVIDER_MANAGED,
             'valid_values': [spark_service.PROVIDER_MANAGED,
                              spark_service.PKB_MANAGED]}),
-        'num_workers': (option_decoders.IntDecoder, {
-            'default': 3, 'min': 1}),
-        'cloud': (option_decoders.EnumDecoder, {
-            'valid_values': providers.VALID_CLOUDS}),
-        'zone': (option_decoders.StringDecoder, {'none_ok': True,
-                                                 'default': None}),
-        'project': (option_decoders.StringDecoder, {'default': None,
-                                                    'none_ok': True}),
-        'machine_type': (option_decoders.StringDecoder, {'default': None,
-                                                         'none_ok': True})})
+        'worker_group': (_VmGroupSpecDecoder, {}),
+        'master_group': (_VmGroupSpecDecoder,
+                         {'default': None,
+                          'none_ok': True})})
     return result
 
   @classmethod
@@ -229,15 +346,15 @@ class _SparkServiceSpec(spec.BaseSpec):
           provided config values.
     """
     super(_SparkServiceSpec, cls)._ApplyFlags(config_values, flag_values)
-    if flag_values['cloud'].present or 'cloud' not in config_values:
-      config_values['cloud'] = flag_values.cloud
-    if flag_values['project'].present or 'project' not in config_values:
-      config_values['project'] = flag_values.project
     if flag_values['spark_static_cluster_id'].present:
       config_values['static_cluster_id'] = (
           flag_values.spark_static_cluster_id)
     if flag_values['zones'].present:
-      config_values['zone'] = flag_values.zones[0]
+      for group in ('master_group', 'worker_group'):
+        if group in config_values:
+          for cloud in config_values[group]['vm_spec']:
+            config_values[group]['vm_spec'][cloud]['zone'] = (
+                flag_values.zones[0])
 
 
 class _VmGroupSpec(spec.BaseSpec):
@@ -297,7 +414,8 @@ class _VmGroupSpec(spec.BaseSpec):
         'cloud': (option_decoders.EnumDecoder, {
             'valid_values': providers.VALID_CLOUDS}),
         'disk_count': (option_decoders.IntDecoder, {
-            'default': _DEFAULT_DISK_COUNT, 'min': 0}),
+            'default': _DEFAULT_DISK_COUNT,
+            'min': 0, 'none_ok': True}),
         'disk_spec': (_PerCloudConfigDecoder, {'default': None,
                                                'none_ok': True}),
         'os_type': (option_decoders.EnumDecoder, {
@@ -363,6 +481,35 @@ class _VmGroupsDecoder(option_decoders.TypeVerifier):
     return result
 
 
+class _VmGroupSpecDecoder(option_decoders.TypeVerifier):
+  """Validates a single VmGroupSpec dictionary."""
+
+  def __init__(self, **kwargs):
+    super(_VmGroupSpecDecoder, self).__init__(valid_types=(dict,), **kwargs)
+
+  def Decode(self, value, component_full_name, flag_values):
+    """Verifies vm_groups dictionary of a benchmark config object.
+
+    Args:
+      value: dict corresonding to a VM group config.
+      component_full_name: string. Fully qualified name of the configurable
+          component containing the config option.
+      flag_values: flags.FlagValues. Runtime flag values to be propagated to
+          BaseSpec constructors.
+
+    Returns:
+      dict a _VmGroupSpec.
+
+    Raises:
+      errors.Config.InvalidValue upon invalid input value.
+    """
+    vm_group_config = super(_VmGroupSpecDecoder, self).Decode(
+        value, component_full_name, flag_values)
+    return _VmGroupSpec(self._GetOptionFullName(component_full_name),
+                        flag_values=flag_values,
+                        **vm_group_config)
+
+
 class _SparkServiceDecoder(option_decoders.TypeVerifier):
   """Validates the spark_service dictionary of a benchmark config object."""
   def __init__(self, **kwargs):
@@ -389,13 +536,13 @@ class _SparkServiceDecoder(option_decoders.TypeVerifier):
     return result
 
 
-
 class BenchmarkConfigSpec(spec.BaseSpec):
   """Configurable options of a benchmark run.
 
   Attributes:
     description: None or string. Description of the benchmark to run.
-    flags: flags.FlagValues. Values to use for each flag while executing the
+    name: Optional. The name of the benchmark
+    flags: dict. Values to use for each flag while executing the
         benchmark.
     vm_groups: dict mapping VM group name string to _VmGroupSpec. Configurable
         options for each VM group used by the benchmark.
@@ -445,9 +592,13 @@ class BenchmarkConfigSpec(spec.BaseSpec):
     result = super(BenchmarkConfigSpec, cls)._GetOptionDecoderConstructions()
     result.update({
         'description': (option_decoders.StringDecoder, {'default': None}),
-        'flags': (_FlagsDecoder, {}),
+        'name': (option_decoders.StringDecoder, {'default': None}),
+        'flags': (option_decoders.TypeVerifier, {'default': None,
+                                                 'none_ok': True,
+                                                 'valid_types': (dict,)}),
         'vm_groups': (_VmGroupsDecoder, {'default': {}}),
-        'spark_service': (_SparkServiceDecoder, {'default': None})})
+        'spark_service': (_SparkServiceDecoder, {'default': None}),
+        'dpb_service': (_DpbServiceDecoder, {'default': None})})
     return result
 
   def _DecodeAndInit(self, component_full_name, config, decoders, flag_values):
@@ -466,8 +617,7 @@ class BenchmarkConfigSpec(spec.BaseSpec):
     # Decode benchmark-specific flags first and use them while decoding the
     # rest of the BenchmarkConfigSpec's options.
     decoders = decoders.copy()
-    self.flags = decoders.pop('flags').Decode(config.pop('flags', None),
-                                              component_full_name, flag_values)
+    self.flags = config.get('flags')
     with self.RedirectFlags(flag_values):
       super(BenchmarkConfigSpec, self)._DecodeAndInit(
           component_full_name, config, decoders, flag_values)
@@ -480,5 +630,6 @@ class BenchmarkConfigSpec(spec.BaseSpec):
       flag_values: flags.FlagValues object. Within the enclosed code block,
           reads and writes to this object are redirected to self.flags.
     """
-    with flag_util.FlagDictSubstitution(flag_values, lambda: self.flags):
+    flags = FlagsDecoder().Decode(self.flags, 'flags', flag_values)
+    with flag_util.FlagDictSubstitution(flag_values, lambda: flags):
       yield
