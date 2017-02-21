@@ -19,6 +19,9 @@ import time
 
 import boto
 
+#CPOMMW Uncomment the following line to generate boto debugging information
+#boto.set_stream_logger('boto')
+
 import object_storage_interface
 
 
