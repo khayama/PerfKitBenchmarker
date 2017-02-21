@@ -43,7 +43,7 @@ import s3_flags  # noqa
 FLAGS = flags.FLAGS
 
 flags.DEFINE_enum(
-    'storage_provider', 'GCS', ['GCS', 'S3', 'AZURE'],
+    'storage_provider', 'GCS', ['GCS', 'S3', 'AZURE', 'COSS3'],
     'The target storage provider to test.')
 
 flags.DEFINE_string('bucket', None,
@@ -109,7 +109,7 @@ flags.DEFINE_enum('object_naming_scheme', 'sequential_by_stream',
                   'approximately_sequential: object names from all '
                   'streams will roughly increase together.')
 
-STORAGE_TO_SCHEMA_DICT = {'GCS': 'gs', 'S3': 's3', 'AZURE': 'azure'}
+STORAGE_TO_SCHEMA_DICT = {'GCS': 'gs', 'S3': 's3', 'AZURE': 'azure', 'COSS3': 's3'}
 
 # If more than 5% of our upload or download operations fail for an iteration,
 # there is an availability issue with the service provider or the connection
@@ -129,7 +129,8 @@ LIST_CONSISTENCY_WAIT_TIME_LIMIT = 300
 
 # Total number of objects we will provision before we do the list
 # This covers 5 pages of List (one page == 1000 objects)
-LIST_CONSISTENCY_OBJECT_COUNT = 5000
+# CPOMMW Make consistent between #objects  used by Azure and other providers
+LIST_CONSISTENCY_OBJECT_COUNT = 1000
 
 # List-after-update (delete) consistency:
 # We will randomly delete X% number of objects we have just written, and then
@@ -138,7 +139,8 @@ LIST_AFTER_UPDATE_DELETION_RATIO = 0.1
 
 # Provisioning is done in parallel threads to reduce test iteration time!
 # This number specifies the thread count.
-LIST_CONSISTENCY_THREAD_COUNT = 100
+# CPOMMW Reduce to 10 threads to make consistent between providers and to workaround DNS issues with 100 parallel requests
+LIST_CONSISTENCY_THREAD_COUNT = 10
 
 # Names of the list consistency scenarios we test in this benchmark
 LIST_AFTER_WRITE_SCENARIO = 'list-after-write'
@@ -1078,6 +1080,9 @@ def Main(argv=sys.argv):
     import gcs
     service = gcs.GCSService()
   elif FLAGS.storage_provider == 'S3':
+    import s3
+    service = s3.S3Service()
+  elif FLAGS.storage_provider == 'COSS3':
     import s3
     service = s3.S3Service()
   else:
