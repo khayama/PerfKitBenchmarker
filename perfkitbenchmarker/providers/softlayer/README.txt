@@ -1,5 +1,5 @@
 
-Notes on prereqs  :
+Notes on prereqs :
 PKB installation may require packages for Pandas and other components to install correctly.  
 - On Ubuntu 14 the following prereqs were required:  apt-get install build-essential; apt-get install python-dev
 
