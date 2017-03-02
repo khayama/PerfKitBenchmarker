@@ -30,8 +30,10 @@ class AzureService(object_storage_interface.ObjectStorageServiceBase):
   def __init__(self):
     if FLAGS.azure_key is None or FLAGS.azure_account is None:
       raise ValueError('Must specify azure account and key.')
+    #CPOVRB added proocol to the azure blob service  
     self.blobService = azure.storage.blob.BlobService(FLAGS.azure_account,
-                                                      FLAGS.azure_key)
+                                                      FLAGS.azure_key,
+                                                      FLAGS.azure_protocol)
 
   def ListObjects(self, bucket, prefix):
     return [obj.name

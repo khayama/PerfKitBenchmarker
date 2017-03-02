@@ -20,9 +20,13 @@ from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.providers import azure
 from perfkitbenchmarker.providers.azure import azure_network
 
-flags.DEFINE_string('azure_lib_version', None,
+flags.DEFINE_string('azure_lib_version', '',   
                     'Use a particular version of azure client lib, e.g.: 1.0.2')
 
+flags.DEFINE_boolean(
+    'azure_httpsec',  False,
+    'Default is http (False), set to True for https')
+ 
 FLAGS = flags.FLAGS
 
 DEFAULT_AZURE_REGION = 'eastus2'
@@ -116,8 +120,13 @@ class AzureBlobStorageService(object_storage_service.ObjectStorageService):
             linux_packages.GetPipPackageVersion(vm, 'azure')}
 
   def APIScriptArgs(self):
+    #CPOVB - Use http by default unless commmand line flag set to true
+    azure_cmdprotocol = 'http'
+    if FLAGS.azure_httpsec:
+      azure_cmdprotocol = 'https'
     return ['--azure_account=%s' % self.storage_account.name,
-            '--azure_key=%s' % self.storage_account.key]
+            '--azure_key=%s' % self.storage_account.key,
+            '--azure_protocol=%s' % azure_cmdprotocol]
 
   @classmethod
   def APIScriptFiles(cls):
