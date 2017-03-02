@@ -20,7 +20,7 @@ from perfkitbenchmarker import vm_util
 from perfkitbenchmarker.providers import azure
 from perfkitbenchmarker.providers.azure import azure_network
 
-flags.DEFINE_string('azure_lib_version', '',   
+flags.DEFINE_string('azure_lib_version', None,   
                     'Use a particular version of azure client lib, e.g.: 1.0.2')
 
 flags.DEFINE_boolean(
@@ -82,11 +82,13 @@ class AzureBlobStorageService(object_storage_service.ObjectStorageService):
   def PrepareVM(self, vm):
     vm.Install('azure_cli')
 
-    if FLAGS.azure_lib_version:
-      version_string = '==' + FLAGS.azure_lib_version
-    else:
-      version_string = ''
-    vm.RemoteCommand('sudo pip install azure%s' % version_string)
+    # CPOMMW this check causing errors if lib_version not set
+    #if FLAGS.azure_lib_version:
+    #  version_string = '==' + FLAGS.azure_lib_version
+    #else:
+    #  version_string = ''
+    #vm.RemoteCommand('sudo pip install azure%s' % version_string)
+    vm.RemoteCommand('sudo pip install azure')
 
     vm.PushFile(
         object_storage_service.FindCredentialFile('~/' +
