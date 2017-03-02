@@ -49,3 +49,7 @@ flags.DEFINE_enum(
     'The type of storage account to use for blob storage. Choosing Storage '
     'will let you use ZRS storage. Choosing BlobStorage will give you access '
     'to Hot and Cold storage tiers.')
+
+flags.DEFINE_boolean(
+    'azure_httpsec', False, 
+    'switch for http protocol to use  for BlobStorage calls - default is False - so will get http downstream') 

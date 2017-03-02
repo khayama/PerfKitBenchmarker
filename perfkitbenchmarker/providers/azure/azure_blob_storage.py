@@ -23,10 +23,6 @@ from perfkitbenchmarker.providers.azure import azure_network
 flags.DEFINE_string('azure_lib_version', None,   
                     'Use a particular version of azure client lib, e.g.: 1.0.2')
 
-flags.DEFINE_boolean(
-    'azure_httpsec',  False,
-    'Default is http (False), set to True for https')
- 
 FLAGS = flags.FLAGS
 
 DEFAULT_AZURE_REGION = 'eastus2'
