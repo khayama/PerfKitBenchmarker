@@ -1085,6 +1085,8 @@ def PrepareVM(vm, service):
 
 
 def CleanupVM(vm, service):
+  #CPOMMW - don't cleanup the VM, it will be deleted
+  return
   service.CleanupVM(vm)
   vm.RemoteCommand('/usr/bin/yes | sudo pip uninstall python-gflags')
   vm.RemoteCommand('sudo rm -rf /tmp/run/')
