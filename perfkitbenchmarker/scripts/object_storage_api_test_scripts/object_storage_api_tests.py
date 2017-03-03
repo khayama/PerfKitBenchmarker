@@ -152,13 +152,13 @@ LIST_RESULT_SUFFIX_INCONSISTENCY_WINDOW = '-inconsistency-window'
 # Size of large objects used in single stream throughput benchmarking.
 # 100 MiB (100 * 2 ^ 20)
 #LARGE_OBJECT_SIZE_BYTES = 100 * 1024 * 1024
-# CPOMMW switch to 5GiB
-LARGE_OBJECT_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+# CPOMMW switch to 1GiB
+LARGE_OBJECT_SIZE_BYTES = 1 * 1024 * 1024 * 1024
 
 # The number of large objects we use in single stream throughput benchmarking.
 #LARGE_OBJECT_COUNT = 100
-#CPOMMW - reduce object since we're using 5GiB objects
-LARGE_OBJECT_COUNT = 10
+#CPOMMW - reduce object since we're using 1GiB objects
+LARGE_OBJECT_COUNT = 100
 
 LARGE_OBJECT_FAILURE_TOLERANCE = 0.1
 
