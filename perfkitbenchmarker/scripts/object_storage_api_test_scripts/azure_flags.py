@@ -21,3 +21,6 @@ flags.DEFINE_string('azure_account', None,
 
 flags.DEFINE_string('azure_key', None,
                     'The key of the storage account for Azure.')
+
+flags.DEFINE_string('azure_protocol', None,
+                    'protocol to use on the http pooled connection to blobstorage  - either will be http or https')
