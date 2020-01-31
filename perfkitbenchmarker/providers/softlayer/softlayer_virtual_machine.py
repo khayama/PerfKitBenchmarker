@@ -323,7 +323,11 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
             ['--vlan-private', '%s' % private_vlan_id]
 
     stdout, _, _ = vm_util.IssueCommand(create_cmd)
+    stdout = stdout.strip()
+    stdout = stdout[1:197]
+    stdout = stdout.strip()
     response = json.loads(stdout)
+    response['id'] = response['ID']
     self.id = response['id']
 
 # CPOMRS
