@@ -642,7 +642,7 @@ $ ./pkb.py --cloud=Rackspace --machine_type=general1-2 --benchmarks=iperf
 ## Example run on SoftLayer
 
 ```bash
-$ ./pkb --cloud=SoftLayer --benchmarks=iperf --zones=tor01 --machine_type="{\"cpus\": 4, \"memory\": 4096, \"os\": \"UBUNTU_LATEST_64\", \"nic\": 1000 }"
+$ ./pkb.py --cloud=SoftLayer --benchmarks=iperf --zones=tok04 --machine_type="{\"cpus\": 4, \"memory\": 4096, \"os\": \"UBUNTU_LATEST_64\", \"nic\": 1000 }"
 
 ```
 
