@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-python-gflags==3.0.4
+absl-py
 jinja2>=2.7
-setuptools
+setuptools>=40.3.0
 colorlog[windows]==2.6.0
 blinker>=1.3
 futures>=3.0.3
-PyYAML==3.11
+PyYAML==5.1.2
 pint>=0.7
-numpy
-functools32
+numpy==1.16.4
 contextlib2>=0.5.1
+pywinrm
+timeout-decorator
+google-cloud-monitoring
