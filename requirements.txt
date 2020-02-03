@@ -24,3 +24,5 @@ contextlib2>=0.5.1
 pywinrm
 timeout-decorator
 google-cloud-monitoring
+python-gflags==3.0.4
+functools32
