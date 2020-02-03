@@ -13,6 +13,6 @@
 # limitations under the License.
 # Additional requirements (beyond those in requirements.txt) for running
 # PerfKitBenchmarker on SoftLayer.
-softlayer
+softlayer>=5.8.5
 colorama==0.3.3
 requests[security] 
