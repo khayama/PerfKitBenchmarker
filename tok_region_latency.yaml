@@ -11,4 +11,3 @@ ping:
     owner: khayama
     cloud: SoftLayer
     machine_type: '{"cpus": 2, "memory": 4096, "os": "UBUNTU_LATEST_64", "nic": 1000 }'
-    run_processes: 3
