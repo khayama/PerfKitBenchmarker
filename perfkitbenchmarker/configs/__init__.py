@@ -281,7 +281,7 @@ def LoadMinimalConfig(benchmark_config, benchmark_name):
   yaml_config.append(benchmark_config)
 
   try:
-    config = yaml.load('\n'.join(yaml_config))
+    config = yaml.load('\n'.join(yaml_config), Loader=yaml.SafeLoader)
   except yaml.parser.ParserError as e:
     raise errors.Config.ParseError(
         'Encountered a problem loading the default benchmark config. Please '
