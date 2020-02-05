@@ -1,5 +1,5 @@
 ping:
-  flag_matrix: inter_region
+  flag_matrix: intra_region
   flag_matrix_filters:
     inter_region: "zones < extra_zones"
   flag_matrix_defs:
@@ -11,3 +11,4 @@ ping:
     owner: khayama
     cloud: SoftLayer
     machine_type: '{"cpus": 2, "memory": 4096, "os": "UBUNTU_LATEST_64", "nic": 1000 }'
+    
