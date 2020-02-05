@@ -155,7 +155,7 @@ def _LoadUserConfig(path):
   config_files = _GetImportFiles(path)
   with contextlib2.ExitStack() as stack:
     files = [stack.enter_context(open(f)) for f in config_files]
-    return yaml.load(_ConcatenatedFiles(files))
+    return yaml.load(_ConcatenatedFiles(files), Loader=yaml.SafeLoader)
 
 
 @functools32.lru_cache()
