@@ -4,8 +4,8 @@ ping:
     inter_zone: "zones < extra_zones"
   flag_matrix_defs:
     inter_zone:    
-      zones: [dal13,hou02,mex01,mon01,sea01,sjc05,tor01,wdc07,ams03,fra05,lon06,mil01,par01,che01,hkg02,mel01,sng01,syd05,tok05,sao01]
-      extra_zones: [dal13,hou02,mex01,mon01,sea01,sjc05,tor01,wdc07,ams03,fra05,lon06,mil01,par01,che01,hkg02,mel01,sng01,syd05,tok05,sao01]
+      zones: [dal13,hou02,mex01,mon01,sea01,sjc04,tor01,wdc07,ams03,fra05,lon06,mil01,par01,che01,hkg02,mel01,sng01,syd05,tok05,sao01]
+      extra_zones: [dal13,hou02,mex01,mon01,sea01,sjc04,tor01,wdc07,ams03,fra05,lon06,mil01,par01,che01,hkg02,mel01,sng01,syd05,tok05,sao01]
       
   flags:
     owner: khayama
