@@ -412,7 +412,7 @@ class YAMLParser(flags.ArgumentParser):
       # without significant changes to the config system, and the
       # problem is unlikely to occur in PKB.
       try:
-        return yaml.load(inp)
+        return yaml.load(inp, Loader=yaml.SafeLoader)
       except yaml.YAMLError as e:
         raise ValueError("Couldn't parse YAML string '%s': %s" %
                          (inp, e.message))
