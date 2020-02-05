@@ -1,9 +1,9 @@
 ping:
-  flag_matrix: intra_region
+  flag_matrix: inter_zone
   flag_matrix_filters:
-    inter_region: "zones < extra_zones"
+    inter_zone: "zones < extra_zones"
   flag_matrix_defs:
-    inter_region:    
+    inter_zone:    
       zones: [tok02,tok04,tok05]
       extra_zones: [tok02,tok04,tok05]
       
