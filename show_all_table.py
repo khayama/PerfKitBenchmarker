@@ -32,7 +32,7 @@ for i in range(len(avg)):
     sending_zone = avg[i]['labels'][435:440]
     receiving_zone = avg[i]['labels'][359:364]
     latency = avg[i]['value']
-    print(sending_zone + " --> " + receiving_zone + " : " + str(latency) + " ms")
+    print(str(i) + " : " + sending_zone + " --> " + receiving_zone + " : " + str(latency) + " ms")
 
 n = len(avg)/2
 array = [[0] * n for i in range(n)]
