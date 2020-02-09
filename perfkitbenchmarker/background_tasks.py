@@ -72,7 +72,7 @@ from perfkitbenchmarker import log_util
 # For situations where an interruptable wait is necessary, a loop of waits with
 # long timeouts is used instead. This is because some of Python's built-in wait
 # methods are non-interruptable without a timeout.
-_LONG_TIMEOUT = 1800.
+_LONG_TIMEOUT = 3000.
 
 # Constants used for polling waits. See _WaitForCondition.
 _WAIT_MIN_RECHECK_DELAY = 0.001  # 1 ms
