@@ -46,11 +46,11 @@ CERT_FILE = 'perfkitbenchmarker.pem'
 VM_TMP_DIR = '/tmp/pkb'
 
 # Default timeout for issuing a command.
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 900
 
 # Defaults for retrying commands.
 POLL_INTERVAL = 30
-TIMEOUT = 2400
+TIMEOUT = 3600
 FUZZ = .5
 MAX_RETRIES = -1
 
