@@ -16,3 +16,4 @@
 softlayer>=5.8.0
 colorama==0.3.3
 requests[security] 
+retry
