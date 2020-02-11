@@ -24,6 +24,7 @@ import threading
 import string
 import random
 from time import sleep
+from retry import retry
 
 from perfkitbenchmarker import errors
 from perfkitbenchmarker import flags
@@ -218,6 +219,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
     """Delete VM dependencies."""
     self.DeleteKeyfile()
 
+  @retry(TransportError(500), tries=3, delay=2)
   def _Create(self):
     """Create a VM instance."""
 
