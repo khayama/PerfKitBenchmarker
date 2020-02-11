@@ -219,7 +219,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
     """Delete VM dependencies."""
     self.DeleteKeyfile()
 
-  @retry(TransportError(500), tries=3, delay=2)
+  @retry(TransportError, tries=3, delay=2)
   def _Create(self):
     """Create a VM instance."""
 
