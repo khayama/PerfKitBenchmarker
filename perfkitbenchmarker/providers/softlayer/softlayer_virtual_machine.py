@@ -219,7 +219,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
     """Delete VM dependencies."""
     self.DeleteKeyfile()
 
-  @retry(TransportError, tries=3, delay=2)
+  @retry(tries=3, delay=2, backoff=2)
   def _Create(self):
     """Create a VM instance."""
 
@@ -324,7 +324,11 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
         create_cmd = create_cmd + \
             ['--vlan-private', '%s' % private_vlan_id]
 
-    stdout, _, _ = vm_util.IssueCommand(create_cmd)
+    try:
+	stdout, _, _ = vm_util.IssueCommand(create_cmd)
+    except TransportError as ex:
+	logging.error(ex)
+	raise
     stdout = stdout.strip()
     stdout = stdout[1:197]
     stdout = stdout.strip()
