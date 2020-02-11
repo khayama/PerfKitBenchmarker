@@ -218,6 +218,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
     """Delete VM dependencies."""
     self.DeleteKeyfile()
 
+  @vm_util.Retry(log_errors=False)
   def _Create(self):
     """Create a VM instance."""
 
@@ -322,7 +323,8 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
         create_cmd = create_cmd + \
             ['--vlan-private', '%s' % private_vlan_id]
 
-    stdout, _, _ = vm_util.IssueCommand(create_cmd)
+    #stdout, _, _ = vm_util.IssueCommand(create_cmd)
+    stdout, _, _ = util.IssueRetryableCommand(create_cmd)
     stdout = stdout.strip()
     stdout = stdout[1:197]
     stdout = stdout.strip()
