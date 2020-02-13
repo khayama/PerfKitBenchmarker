@@ -34,7 +34,8 @@ for i in range(len(avg)):
     latency = avg[i]['value']
     print(str(i) + " : " + sending_zone + " --> " + receiving_zone + " : " + str(latency) + " ms")
 
-n = len(avg)/2
+zones = ['', 'dal13', 'hou02', 'mex01', 'mon01', 'sea01', 'sjc04', 'tor01', 'wdc07', 'ams03', 'fra05', 'lon02', 'mil01', 'par01', 'che01', 'hkg02', 'mel01', 'sng01', 'syd05', 'tok05', 'sao01']
+n = len(zones)-1
 array = [[0] * n for i in range(n)]
 for i in range(n):
     for j in range(n):
@@ -48,7 +49,6 @@ for i in range(n):
 
 from prettytable import PrettyTable 
 
-zones = ['', 'dal13', 'hou02', 'mex01', 'mon01', 'sea01', 'sjc04', 'tor01', 'wdc07', 'ams03', 'fra05', 'lon06', 'mil01', 'par01', 'che01', 'hkg02', 'mel01', 'sng01', 'syd05', 'tok05', 'sao01']
 table = PrettyTable(zones)
 for i in range(len(array)):
     array[i].insert(0, zones[i+1])
