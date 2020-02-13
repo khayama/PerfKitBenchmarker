@@ -41,7 +41,7 @@ for i in range(n):
     for j in range(n):
         if i != j:
             data = [x['value'] for x in avg if x['labels'][435:440] == zones[i+1] and x['labels'][359:364] == zones[j+1] ]
-            array[i][j] = int(data[0])
+            array[i][j] = data[0]
 
 from prettytable import PrettyTable 
 
