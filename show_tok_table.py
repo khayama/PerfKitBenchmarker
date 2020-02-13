@@ -34,6 +34,7 @@ for i in range(len(avg)):
     latency = avg[i]['value']
     print(str(i) + " : " + sending_zone + " --> " + receiving_zone + " : " + str(latency) + " ms")
 
+zones = ['(ms)', 'tok02', 'tok04', 'tok05']
 n = len(zones)-1
 array = [[0] * n for i in range(n)]
 for i in range(n):
