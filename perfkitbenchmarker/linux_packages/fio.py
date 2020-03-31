@@ -53,7 +53,7 @@ def YumInstall(vm):
 
 def AptInstall(vm):
   """Installs the fio package on the VM."""
-  vm.InstallPackages('libaio-dev libaio1 bc')
+  vm.InstallPackages('python libaio-dev libaio1 bc')
   _Install(vm)
 
 
