@@ -330,7 +330,7 @@ class SoftLayerVirtualMachine(virtual_machine.BaseVirtualMachine):
 	logging.error(ex)
 	raise
     stdout = stdout.strip()
-    stdout = stdout[1:197]
+    stdout = stdout[1:198]
     stdout = stdout.strip()
     response = json.loads(stdout)
     response['id'] = response['ID']
