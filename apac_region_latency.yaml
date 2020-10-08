@@ -1,0 +1,13 @@
+ping:
+  flag_matrix: inter_zone
+  flag_matrix_filters:
+    inter_zone: "zones < extra_zones"
+  flag_matrix_defs:
+    inter_zone:    
+      zones: [sng01,hkg02,tok04,che01,seo01,syd04,osa22]
+      extra_zones: [sng01,hkg02,tok04,che01,seo01,syd04,osa22]
+      
+  flags:
+    owner: khayama
+    cloud: SoftLayer
+    machine_type: '{"cpus": 2, "memory": 4096, "os": "UBUNTU_LATEST_64", "nic": 1000 }'
